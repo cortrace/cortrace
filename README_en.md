@@ -14,7 +14,7 @@ tools for the FPGA parallel-trace capture appliance.
 ## Install (Ubuntu 22.04 amd64)
 
 Download `cortrace_<version>_amd64.deb` from the
-[GitHub Releases](https://github.com/FASTSHIFT/cortrace/releases):
+[GitHub Releases](https://github.com/cortrace/cortrace/releases):
 
 ```sh
 sudo apt install ./cortrace_*_amd64.deb      # pulls in python3 and binutils-arm-none-eabi
@@ -184,8 +184,8 @@ docs/               design docs (architecture, Perfetto bridges, fusion, ...)
 
 ## Related repos
 
-- [**cortrace-fpga**](https://github.com/FASTSHIFT/cortrace-fpga) — RTL of the Artix-7 parallel-ETM capture appliance plus small board-debug tools (the formal PC-side tools live in this repo)
-- [**stm32h743-etm-trace-firmware**](https://github.com/FASTSHIFT/stm32h743-etm-trace-firmware) — deterministic selftrace target firmware
+- [**cortrace-fpga**](https://github.com/cortrace/cortrace-fpga) — RTL of the Artix-7 parallel-ETM capture appliance plus small board-debug tools (the formal PC-side tools live in this repo)
+- [**stm32h743-etm-trace-firmware**](https://github.com/cortrace/stm32h743-etm-trace-firmware) — deterministic selftrace target firmware
 
 ## License
 

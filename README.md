@@ -11,7 +11,7 @@
 
 ## 安装（Ubuntu 22.04 amd64）
 
-从 [GitHub Releases](https://github.com/FASTSHIFT/cortrace/releases) 下载 `cortrace_<版本>_amd64.deb`：
+从 [GitHub Releases](https://github.com/cortrace/cortrace/releases) 下载 `cortrace_<版本>_amd64.deb`：
 
 ```sh
 sudo apt install ./cortrace_*_amd64.deb      # 自动装上 python3 和 binutils-arm-none-eabi
@@ -165,8 +165,8 @@ docs/               设计文档（架构、Perfetto 直连/融合/Record 桥…
 
 ## 相关仓库
 
-- [**cortrace-fpga**](https://github.com/FASTSHIFT/cortrace-fpga) — Artix-7 并口 ETM 采集器的 RTL 与板级调试小工具（PC 侧正式工具都在本仓库）
-- [**stm32h743-etm-trace-firmware**](https://github.com/FASTSHIFT/stm32h743-etm-trace-firmware) — 确定性 selftrace 目标板固件
+- [**cortrace-fpga**](https://github.com/cortrace/cortrace-fpga) — Artix-7 并口 ETM 采集器的 RTL 与板级调试小工具（PC 侧正式工具都在本仓库）
+- [**stm32h743-etm-trace-firmware**](https://github.com/cortrace/stm32h743-etm-trace-firmware) — 确定性 selftrace 目标板固件
 
 ## 许可证
 

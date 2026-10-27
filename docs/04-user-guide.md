@@ -154,7 +154,7 @@ flowchart LR
 
 ## 3. 安装
 
-从 [GitHub Releases](https://github.com/FASTSHIFT/cortrace/releases) 下载 `cortrace_<版本>_amd64.deb`：
+从 [GitHub Releases](https://github.com/cortrace/cortrace/releases) 下载 `cortrace_<版本>_amd64.deb`：
 
 ```sh
 sudo apt install ./cortrace_*_amd64.deb
