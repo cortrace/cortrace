@@ -51,7 +51,7 @@ set(CPACK_STRIP_FILES ON)
 set(CPACK_PACKAGING_INSTALL_PREFIX /usr)
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_PACKAGE_SECTION devel)
-set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/FASTSHIFT/cortrace")
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/cortrace/cortrace")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
     "python3 (>= 3.10), python3-pyelftools, python3-tomli | python3 (>= 3.11)")
