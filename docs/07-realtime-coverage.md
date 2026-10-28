@@ -1,7 +1,8 @@
 # Cortrace — 实时代码覆盖率（设计文档）
 
 日期：2026-10-28
-状态：设计稿（含 2026-10-28 的实测数据）。未实现，执行前需确认。
+状态：P0 已验证，P1（离线覆盖引擎与 `cortrace cover`）已实现并上板验证，见 §13。P2（实时）未开始。
+§5 到 §8 正文保留设计时的思路，实现和设计不一致的地方在各节以"实现"标出。
 
 对标 SEGGER J-Trace PRO + Ozone 的 Live Code Coverage 和 Lauterbach TRACE32 的基于 trace 的代码覆盖率。
 评估 cortrace 现有代码能直接复用多少、缺什么、怎么分阶段加。
@@ -68,6 +69,25 @@
   本文没有读到官方细节，推测会依赖编译选项和优化等级。这一块不在本文范围（§1 非目标）。
 - "合并多次运行"是刚需（t32covtool 存在的原因）：覆盖率几乎从来不是一次运行出来的。
 
+### 2.1 PC 程序的覆盖率工具：能借什么
+
+PC 上没有一个工具同时具备"硬件指令 trace、实时、源码行着色"，但各个环节都有成熟的参考。下表按对我们的
+参考价值排序（描述已改写，出处见 §12）。
+
+| 类别 | 工具 | 做法 | 我们借什么 | 借到哪里 |
+|---|---|---|---|---|
+| 硬件 trace | honggfuzz（Intel PT / BTS） | 用处理器 trace 做覆盖引导 fuzzing | Intel PT 之于 x86 就是 ETM 之于 Cortex-M，同一类数据源 | 定位 |
+| 硬件 trace | PTrix（论文） | 指出从高度压缩的 PT 轨迹里重建覆盖很慢，反而拖慢 fuzzing；解法是让 trace 解析与目标执行高度并行，并直接用解码后的轨迹当反馈，省掉完整的覆盖重建 | 和我们的瓶颈完全同构（§3.2，慢 5.4 倍）。"并行解析"对应 §6.2 路径 B，"不做完整重建"对应路径 D | §6.2 |
+| 二进制层 | kcov | 只靠 DWARF 调试信息、不用特殊编译选项收集 ELF 的覆盖，对长时间运行的程序持续输出结果 | "DWARF 行表即分母"的最小实现；持续刷新输出 | §5.2、§7.3 |
+| 二进制层 | DynamoRIO drcov + Lighthouse（IDA、Binary Ninja）、Dragon Dance（Ghidra）、CutterDRcov、bncov | 运行时记录执行过的基本块，覆盖数据与模块映射分开存，在反汇编器里着色、合并、做集合运算 | 覆盖数据和 CodeMap 分开存；多次运行做并集、差集对比 | §7.1 `merge` / `diff` |
+| 聚合与界面 | syzkaller + kcov（Linux 内核） | 内核 kcov 导出执行过的基本块地址，管理端用 objdump、nm、addr2line、readelf 映射到函数和行，网页上按目录树显示"X% of N" | 地址到行的映射流程；按目录树逐级汇总的网页 | §5.2、§7.3 |
+| 聚合与界面 | vscode-syzkaller-coverage | VS Code 扩展，在编辑器里高亮一个正在运行的 syz-manager 已覆盖的行 | 编辑器内实时着色，正是 §7.3 想要的形态，数据源换成 ETM | §7.3 |
+| 插桩，运行中可读 | LLVM source-based coverage 的 continuous 模式（`%c`） | 计数器在运行中就同步到文件，支持在线合并 | "映射建一次，计数器随时取快照"的数据模型 | §5.3 `snapshot()` |
+| 插桩，运行中可读 | Go `-cover` + `GOCOVERDIR`、`runtime/coverage.WriteCountersDir` | 运行中的程序可随时把计数器写到目录；社区有用 HTTP handler 实时出报告的项目 | 快照接口与 HTTP 实时报告 | §7.3 |
+| 插桩，运行中可读 | JaCoCo agent 的 `tcpserver` 模式 | 执行数据经 TCP 连接按需取出，被测程序不用停 | 拉取式快照，不需要停程序 | §7.3 |
+
+我们没法插桩，所以第三类只借数据模型和接口形态，不借采集手段。
+
 ---
 
 ## 3. 现状盘点
@@ -106,10 +126,25 @@ CCI+TS），`cortrace capture --secs 3` 的原始文件，用已安装的 `cortr
 | A-sync 数 | 58,894（平均每约 1 KB ETM 一个） |
 
 折算：解码吞吐约 10.3 MB/s 原始、3.7 MB/s ETM，**比到达速度慢 5.4 倍**（16.33 s 处理 3 s 的数据）。
-这条流水线里还包含去帧、调用栈机，OpenCSD 本身占多少没有单独测，是 P0 要量的第一件事。
 
-这是最坏情形：`-O0` 的 CoreMark 分支密度极高，而且周期计数让每个区间多一个字段。覆盖率不需要周期计数
-和时间戳，关掉之后 ETM 数据量应该明显下降，但没测过，不能当结论用。
+**P0 补测（同日，A4/A5）**：用一个只挂空 sink 的小程序（`tmp/bench/ocsd_bench.cpp`，不跑去帧、调用栈机）
+单独测 OpenCSD；再在运行中的板子上用 OpenOCD 把 `TRCCONFIGR` 从 `0x811`（CCI+TS）改成 `0x1`，抓 2 s 对比。
+
+| | CCI + TS 开（`0x811`） | CCI + TS 关（`0x1`） |
+|---|---|---|
+| ETM 数据率 | 约 20.1 MB/s | 约 5.0 MB/s（降到 1/4） |
+| 每秒指令区间 | 约 11.6 M | 约 10.3 M |
+| OpenCSD 单独解码 | 13.57 s / 3 s 数据，**4.5 倍于实时** | 7.29 s / 2 s 数据，**3.6 倍于实时** |
+| 其中 OpenCSD 占整条流水线 | 83%（13.57 / 16.33 s） | — |
+
+结论：
+
+- 慢的是 OpenCSD 本身，去帧和调用栈机加起来只占 17%。
+- **OpenCSD 的开销跟着执行的指令走，不跟着 ETM 字节走**：关掉 CCI/TS 字节少了 3/4，解码时间只少约 20%。
+  折算每个区间约 0.35 到 0.4 µs，约每条指令 36 ns，主要花在逐条跟随指令和读内存镜像上。
+- 所以覆盖率档位（§5.6）的价值是**降带宽、降 FIFO 溢出**，不是加速解码；实时化仍然需要约 4 到 5 倍的并行，
+  或者 §6.2 路径 D 那种查表跟随。
+- 这是最坏情形：`-O0` 的 CoreMark 分支密度极高。
 
 ---
 
@@ -185,6 +220,13 @@ flowchart LR
 | B. Python 用 pyelftools 读行表和函数大小，输出 `lines.tsv`；C++ 做指令扫描并合成 CodeMap | 行表不用自己写；pyelftools 已在包依赖里 | 两段流程，多一个中间文件 | **推荐 P1** |
 | C. 全在 Python 里做，capstone 反汇编 | 最简单 | 新增依赖，指令语义和 OpenCSD 可能不一致 | 不选 |
 
+**实现**：走的是 B 的变体，但顺序反过来，没有中间文件。C++ 的 `CodeMap::from_elf`（`src/codemap.cpp`）
+按带 `SHF_EXECINSTR` 的节和 `$t` / `$a` / `$d` 映射符号切出 Thumb 代码（没有映射符号时退回 `STT_FUNC`），
+用 `TrcIDecode` 逐条扫出指令表，每次运行现建，不缓存（28k 条指令的固件建图耗时可忽略）。
+异常向量表从 `.isr_vector` 等节或 `g_pfnVectors` 等符号读出，用于异常入口校验（§5.4）。
+解码结束后 C++ 输出对象级覆盖，Python（`covmodel.attach_source`）再用 pyelftools 读 DWARF 行表和 `.symtab`，
+把行号和函数挂到每条指令上，写成自包含的覆盖文件。基本块没有做。
+
 内存规模：Flash 2 MB 时按半字对齐是 1M 个单元，指令起点位图 128 KB，执行位图 128 KB，分支结局表每个条件分支 2 位。
 全部可放进内存，不需要稀疏结构。
 
@@ -221,6 +263,17 @@ public:
 
 可选 `--count`：每个指令起点一个 `uint32_t` 命中数，用于热点分析和"确认覆盖"（§5.4）。2 MB Flash 最坏 4 MB。
 
+**实现**：`CoverageSink(map, lag)`。接口按实际的数据流调整：
+
+- `add_segment_start(offset)`：`cortrace-decode` 在把每块 ETM 字节交给 OpenCSD 之前，先用 `AsyncScanner`
+  找出其中的 A-sync（11 个 `0x00` 加 `0x80`），按字节偏移告诉 sink 新段从哪里开始。
+- `on_element(e)`：逐元素处理，命中先记在当前段里。
+- `finish(total)`：收尾，把还在等待的段提交或隔离。
+- 每条指令都有 `uint32_t` 命中数和"在几个不同段里被看到"的段数（后者给 `--confirm`）；条件分支另有
+  taken / not-taken 的次数和段数；间接分支记录观测到的目标集合。计数始终开着，没有单独的 `--count`。
+- `Element` 实际补的字段是 `last_instr_sz`、`last_instr_cond`、`num_instr`、`has_return_addr`、`return_addr`
+  （后两个来自 OpenCSD 异常包的返回地址，用于异常返回校验）。`isa` 没有加：M 类只有 Thumb。
+
 ### 5.4 完整性：怎么避免"错报已覆盖"
 
 覆盖率里最危险的错误是**错报已覆盖**，漏报只是让你多写一个测试。数据链路（FPGA 采样、TPIU 帧）没有 CRC，
@@ -244,6 +297,44 @@ quarantined: 4 segments, 4,123 bytes (0.007%)
 mode       : confirm=2
 ```
 
+**实现**（`src/coverage.cpp`）。子集测试（§9）表明只有上面三道防线不够：一个坏字节常常让 OpenCSD
+沿着一条"合理"的错路走好几个段才失步，A-sync 之后的段也就跟着被污染。实际做法是：
+
+1. **段提交带延迟。** 段在 A-sync 处结束后不马上提交，先排队，再等 `--cov-lag N`（默认 8）个段。
+   这期间任何丢失（`NoSync`、`AddrNacc`、段内 `TraceOn`、`Overflow`）或任何一项静态校验失败，
+   都把当前段**和所有还在排队的段**一起隔离，并清空影子调用栈与异常栈。流的最后一段没有后继来证明它
+   在哪里结束，有多个段时也隔离。
+2. **静态交叉校验**，每个 `InstrRange` 都做：
+   - 区间的起止都落在 CodeMap 的指令边界上，且在同一段连续代码里（`outside_code`）；
+   - OpenCSD 报告的指令数等于静态数出的条数（`count_mismatch`）；
+   - 末条指令的分支类型和条件性与静态解码一致（`kind_mismatch`、`cond_mismatch`）；
+   - **流向**（`flow_mismatch`）：下一个区间的起点必须是上一个区间允许的去处，即不跳转时的下一条、
+     直接分支的静态目标、异常向量表里的入口，或 ISB 之后的下一条；
+   - **影子调用栈**（`return_mismatch`）：调用时压入返回地址，返回时比对。异常进入时压一个标记，
+     返回弹到标记就是 EXC_RETURN，不做比对；没有已知调用者时只要求返回到某个调用指令之后。
+     异常返回到不是被打断的地方计为 `exception_return_elsewhere`（多半是 RTOS 切线程），不算失败。
+   - 周期性 A-sync 不打断流向和调用栈校验，只有丢失才重置。
+3. **确认覆盖**：每条指令和每个分支结局记录"在几个不同的段里出现过"，`--confirm N` 只认 N 个段以上的。
+
+在 `etm_cc6.bin`（6 MB 干净 ETM，CoreMark）上随机改字节（70% 单比特翻转，30% 删掉 1 到 63 字节），
+`--cov-lag 8`，每档 2 到 6 次试验，和无损解码的覆盖比较：
+
+| 每 6 MB 坏几处 | 结果 |
+|---|---|
+| 1 到 5 | 8 次试验全部是无损覆盖的子集，没有任何多报 |
+| 50 | 6 次里 4 次多报了分支结局（1 到 5 个），其中 1 次还多报了 56 条指令；`--confirm 2` 时指令零多报，分支结局最多 1 个 |
+| 500 | 6 次全部多报（最多 90 条指令）；`--confirm 2` 时最多 1 条指令、2 个分支结局 |
+
+延迟的取舍（同一组试验）：`lag 1` 在 50 处坏点时也会多报指令，`lag 16`、`lag 32` 多报只少一点，
+但隔离的段成倍增加（500 处坏点时 `lag 32` 隔离了 85% 的段）。所以默认 8。
+
+**不能靠静态校验发现的情况**：条件分支的原子位翻转，而两条路在后面又汇合（`if` 没有 `else`、循环的最后一次）。
+两条路都合法，指令数、流向都对得上，只有分支结局和其中一段指令是错的。这就是上表 50 处坏点时剩下的多报。
+`--confirm 2` 能把它压到接近零，代价是只执行过一次的路径不再算覆盖。
+
+真实链路的误码远低于上表：今天 75 MHz 的干净抓取（§13）两次共 50k 个段，丢失和校验失败都是 0。
+有误码的链路上，丢失会先暴露出来（报告里 `lossy`），这时再用 `--confirm 2`。
+
 ### 5.5 指标定义
 
 | 指标 | 分子 | 分母 | 备注 |
@@ -255,7 +346,20 @@ mode       : confirm=2
 | 分支覆盖（对象码） | taken 和 not-taken 都出现过的条件分支 | 条件直接分支数 | 对应 Ozone 的"条件真假都出现过" |
 | 基本块覆盖 | 块首被执行的块 | 块数 | |
 
-排除机制：`--include` / `--exclude`（按文件或函数的 glob）。启动代码、HAL、第三方库默认可以排除，
+**实现**（`covreport.py` 开头写了同样的规则，所有格式共用）：
+
+| 指标 | 算覆盖的条件 | 说明 |
+|---|---|---|
+| Instructions | 指令被看到过（`--confirm N` 时要在 N 个段里） | 分母是 CodeMap 的全部 Thumb 指令 |
+| Source Lines | 这一行**至少一条**指令被看到 | 和 lcov 的 `DA > 0`、gcov 一致；JSON 里另给 `covered` / `partial` / `uncovered` / `not_observed` |
+| Branches | 一个**结局**（taken 或 not-taken）被看到 | 每个条件分支算 2 个，和 lcov `BRDA`、gcc 的分支计数一致 |
+| Functions | 函数里任意一条指令被看到 | lcov 的 `FNDA` 用入口指令的命中数 |
+
+函数的指令按地址范围归属（内联进来的头文件代码算在调用它的函数和它所在的 `.c` 文件下），
+行按 DWARF 行表归属（内联代码的行算在头文件里）。会话有丢失或校验失败时，没看到的行是 `not_observed`，不是 `uncovered`。
+基本块覆盖和调用覆盖没有做；间接分支的目标集合记在覆盖文件里，报告暂不展示。
+
+排除机制：`--include` / `--exclude`（按文件或函数的 glob；实现只按源文件的绝对路径匹配，例如 `'*/Drivers/*'`）。启动代码、HAL、第三方库默认可以排除，
 类似 Ozone 允许"全应用、选定模块、选定函数"出报告。
 
 内联和优化：`-O0` / `-Og` 时行覆盖语义最清楚；`-O2` 时同一行会分布在多个函数里，所以行报告同时给出按函数的拆分，
@@ -273,6 +377,9 @@ mode       : confirm=2
 | `TRCSYNCPR` | `0xC` | 保持 | 同步点密，利于分段并行与丢失后快速恢复 |
 
 用法：`cortrace arm --profile coverage`。**带宽下降多少没有测过**，是 P0 的第五条假设。
+
+**实现**：`cortrace arm --profile coverage` 写 `TRCCONFIGR=0x1`，默认 `--profile timing` 仍是 `0x810`。
+实测带宽降到约 1/4（§3.2）。地址范围过滤没有做。Perfetto 的时间基需要 timing 档位。
 
 ---
 
@@ -300,6 +407,10 @@ mode       : confirm=2
 C 和 D 作为 P3 的可选项，D 仅在 P2 实测仍追不上时才做，并且必须用完整 OpenCSD 解码当参照做差分测试
 （仓库不重蹈"精简解码器编造流"的覆辙）。
 
+PC 上的先例（§2.1）支持这个顺序：PTrix 遇到的就是"处理器 trace 解析跟不上"，它的两条解法，
+并行解析和不做完整重建，分别对应路径 B 和 D。PTrix 的场景（x86 fuzzing，要的是边覆盖反馈）
+可以接受近似；我们要的是不错报的覆盖，所以路径 D 的差分验证是硬要求，不能省。
+
 ### 6.3 追不上怎么办：覆盖是集合并集
 
 时间线需要每个事件，覆盖率只需要"出现过"。所以：
@@ -326,9 +437,10 @@ ETMv4 的 A-sync 之后紧跟 Trace Info、上下文和地址包，解码器可�
 |---|---|---|
 | 到达，4 位口、56.25 MHz | 56.25 MB/s 原始，约 20 MB/s ETM（周期计数和时间戳开） | 实测 §3.2 |
 | 单线程整条流水线 | 约 3.7 MB/s ETM | 实测 §3.2 |
-| 需要的并行度（粗算） | 20 / 3.7 ≈ 5.4，实际取 8 以上留余量 | 推算 |
+| OpenCSD 单线程 | 4.5 倍于实时（CCI+TS 开）/ 3.6 倍（关） | 实测 §3.2 |
+| 需要的并行度（粗算） | 覆盖率档位下约 4 到 5，实际取 8 以上留余量 | 推算 |
 | 本机核数 | 24 | `nproc` |
-| 覆盖率档位后的 ETM 带宽 | 未测 | P0 |
+| 覆盖率档位后的 ETM 带宽 | 约 5 MB/s，降到 1/4 | 实测 §3.2 |
 
 ---
 
@@ -349,6 +461,26 @@ cortrace cover diff    base.json new.json                 与基线对比
 低于门限退出码非零）、`--require-lossless`（有任何丢数据就退出非零）。
 C++ 入口：`cortrace-decode --cov-out cov.bin --cov-map fw.covmap`，`capture.py` 和 `test_decode_contract.py`
 要同步（现有契约测试会检查 Python 传的每个参数 `cortrace-decode --help` 里都有）。
+
+**实现**（P1）：
+
+```
+cortrace cover run    --elf fw.elf --iface eth0 --secs 2 --out-dir out/   抓、解、写 cov_<tag>.json、出报告
+cortrace cover run    --elf fw.elf --raw-in raw.bin --out-dir out/        用现成的原始抓取
+cortrace cover run    --elf fw.elf --etm-in etm.bin --out-dir out/        用 --dump-etm 的纯 ETM 字节
+cortrace cover report out/cov_a.json --format lcov -o cov.info             换格式
+cortrace cover merge  a.json b.json -o all.json                            合并同一 ELF 的多次运行
+cortrace cover diff   base.json new.json [--fail-on-regression]            按源码行和函数对比
+```
+
+- `run` 和 `report` 的公共选项：`--format text|json|lcov|cobertura`、`-o`、`--confirm N`、`--include/--exclude GLOB`、
+  `--src-root DIR`、`--no-functions`、`--fail-under lines=,insns=,branches=,functions=`、`--require-lossless`。
+  `run` 另有 `--cov-lag N`（传给解码器）。退出码：0 正常，1 门限或无损要求没过，2 用法或输入错误。
+- `run` 抓取时容忍 UDP 丢帧（`cortrace-grab` 返回 1 但文件已写），受损的段由解码器隔离；`cortrace capture` 仍然把丢帧当错误。
+- `merge` 要求 ELF 的 sha256 相同，并拒绝同一次运行出现两次（否则计数翻倍，会骗过 `--confirm`）。
+- `diff` 可以跨 ELF：按 (源文件, 行号) 和 (源文件, 函数名) 比较。
+- C++ 入口是 `cortrace-decode --elf fw.elf --cov-out objcov.json [--cov-lag N]`，没有 `--cov-map`（CodeMap 每次现建）。
+- `prepare` 和 `live` 属于 P2，没有做。
 
 ### 7.2 报告格式
 
@@ -379,6 +511,17 @@ main.c            |                      |                      |
 JSON 里按行给状态：`covered` / `partial` / `uncovered` / `not_observed`，并带 `insn: [已覆盖, 总数]` 和
 `br: [已覆盖, 总数]`。
 
+**实现**：HTML 没有做，lcov 交给 `genhtml` 即可（`genhtml --branch-coverage`；找不到源文件的库代码先用
+`--exclude` 去掉）。有两种 JSON，不要混淆：
+
+| 文件 | 写的人 | 内容 |
+|---|---|---|
+| `objcov`（`cortrace-objcov` v1） | `cortrace-decode --cov-out` | 只有地址：`insns: [addr, size, flags, hits, segs]`（flags = 分支类型 \| 条件 << 3 \| 分支点 << 4）、`branches: [addr, taken, not_taken, taken_segs, not_taken_segs]`、`indirect`、`health`、`commit_lag`。`cover run` 用完即删 |
+| 覆盖文件 `cov_<tag>.json`（`cortrace-cov` v1） | `cover run` / `cover merge` | objcov 的内容加上每条指令的 (文件, 行)、函数表 `[name, lo, hi, file, line]`、ELF 路径和 sha256、每次运行的 `runs` 记录。自包含，`report` / `merge` / `diff` 不再读 ELF |
+| 报告 JSON（`cortrace-cov-report` v1） | `report --format json` | 总计、按文件、按函数、按行，见上 |
+
+文本报告默认把所有源文件的公共目录作为 `Sources:` 打印一次，表里只写相对路径。
+
 ### 7.3 实时界面（P2）
 
 `cortrace cover live` 起一个只绑 `127.0.0.1` 的本地 HTTP 服务，一个静态页面加 SSE：
@@ -392,6 +535,13 @@ JSON 里按行给状态：`covered` / `partial` / `uncovered` / `not_observed`�
 
 在没有自带界面之前，P1 的 lcov 输出已经可以直接在 VS Code / Kiro 的 Coverage Gutters 里看到行着色，
 是最便宜的"源码视图"。
+
+形态上的参考（§2.1）：
+
+- 目录树逐级显示"X% of N"，照 syzkaller 的覆盖页。
+- 编辑器内实时着色，照 vscode-syzkaller-coverage：P2 先让 `cover live` 每次快照都重写一份 lcov 文件，
+  Coverage Gutters 的文件监视会自动刷新，编辑器里就有了实时着色；自带网页可以晚一步。
+- 拉取式快照（`/api/snapshot.json`），照 JaCoCo `tcpserver` 和 Go `WriteCountersDir`：取快照不打断采集和解码。
 
 可选：把"覆盖率随时间增长"作为一条计数器轨道写进 Perfetto，在同一时间线上看测试什么时候触发了新路径。
 
@@ -415,6 +565,24 @@ JSON 里按行给状态：`covered` / `partial` / `uncovered` / `not_observed`�
 
 CMake 对 `src/`、`tools/`、`tests/` 用的是 glob，新文件会被自动收进来。
 
+**实现（P1 实际改动）**：
+
+| 位置 | 改动 |
+|---|---|
+| `include/cortrace/element.hpp` | `last_instr_sz`、`last_instr_cond`、`num_instr`、`has_return_addr`、`return_addr` |
+| `src/opencsd_decoder.cpp` | 填新字段；`make_opencsd_insn_decoder()`（`TrcIDecode`，配置和 OpenCSD 的 ETMv4 解码器一致） |
+| `include/cortrace/codemap.hpp`、`src/codemap.cpp`（新） | `CodeMap::from_elf`、`scan_region`、`index_at`、向量表 |
+| `include/cortrace/coverage.hpp`、`src/coverage.cpp`（新） | `AsyncScanner`、`CoverageSink`、`CoverageHealth`、objcov 输出 |
+| `tools/cortrace_decode.cpp` | `--cov-out`、`--cov-lag`；每块 ETM 先扫 A-sync 再交给 OpenCSD；打印覆盖小结 |
+| `python/cortrace/covmodel.py`（新） | DWARF 行表、函数表、覆盖文件读写、合并、按行/函数/文件汇总 |
+| `python/cortrace/covreport.py`（新） | text / JSON / lcov / Cobertura |
+| `python/cortrace/cover.py`（新） | `cortrace cover run/report/merge/diff` |
+| `python/cortrace/capture.py` | `grab(..., allow_loss=True)` |
+| `python/cortrace/trace_arm.py`、`armctl.py` | `--profile timing` / `--profile coverage` |
+| `python/cortrace/cli.py` | 注册 `cover` |
+| 测试 | `tests/test_codemap.cpp`、`tests/test_coverage.cpp`、`python/tests/test_cover.py`，契约测试加 `--cov-out` / `--cov-lag` |
+| `docs/04-user-guide.md` | 覆盖率一节 |
+
 ---
 
 ## 9. 验证设计
@@ -431,6 +599,10 @@ CMake 对 `src/`、`tools/`、`tests/` 用的是 glob，新文件会被自动收
 
 门禁沿用现有规则：C++ 行覆盖率 ≥ 95%，clang-format，black，pylint，conventional commits。
 
+**实现**：C++ 单测（`test_codemap.cpp` 用测试里现写的 ELF32 和假指令解码器，`test_coverage.cpp` 用合成元素流）
+和 Python 单测（`test_cover.py`，行表用宿主编译器出的 DWARF 4 和 5 两种 ELF）已加；子集性质测试做了（§5.4 的表），
+脚本没有进仓库；串并行等价（A6）和覆盖金丝雀固件留给 P2。
+
 ---
 
 ## 10. 阶段与工作量
@@ -441,10 +613,12 @@ CMake 对 `src/`、`tools/`、`tests/` 用的是 glob，新文件会被自动收
 |---|---|---|---|
 | **P0 验证** | 验证 §11 的 A1 到 A6；量 OpenCSD 单独的解码吞吐；量覆盖率档位下的 ETM 带宽 | 一页验证记录，决定后续路径 | 2 到 3 |
 | **P1 离线引擎** | `Element` 扩字段；`CodeMap`；`CoverageSink`；`cortrace cover run/report/merge/diff`；text / JSON / lcov / Cobertura；单测与子集性质测试 | 单次抓取直接出 Ozone 风格报告和 lcov | 6 到 8 |
-| **P2 实时** | 增量去帧；按 A-sync 切段；worker 池；段提交与背压记账；`cover live` 与网页；`arm --profile coverage` | 目标运行中，覆盖率每秒更新 | 8 到 10 |
+| **P2 实时** | 增量去帧；按 A-sync 切段；worker 池；段提交与背压记账；`cover live` 与网页；`arm --profile coverage`（已在 P1 做掉） | 目标运行中，覆盖率每秒更新 | 8 到 10 |
 | **P3 增强（可选）** | 常驻 `cortrace-cov`；CFG 引导的快速跟随器；HTML 报告；Perfetto 覆盖增长轨道；MC/DC 调研 | 视 P2 实测而定 | 另估 |
 
 P1 交付即可独立使用，不依赖 P2。
+
+**进度**：P0、P1 已完成（HTML 报告、基本块和调用覆盖没有做，见 §5.5、§7.2）；P2、P3 未开始。
 
 ---
 
@@ -454,12 +628,12 @@ P1 交付即可独立使用，不依赖 P2。
 
 | 编号 | 假设 | 为什么要验证 |
 |---|---|---|
-| A1 | ETMv4 M 类、不开分支广播时，`InstrRange` 在每个条件直接分支处结束，`last_instr_exec` 对应 taken / not-taken | 分支覆盖整个建立在这条上。用合成的小固件加已知分支序列直接验证 |
-| A2 | `num_instr_range` 与 CodeMap 静态扫出的区间指令数一致 | 如果不一致说明指令边界扫描有误 |
-| A3 | 对损坏的数据，OpenCSD 在 NO_SYNC 到下个 A-sync 之间不产出区间 | 子集性质的前提 |
-| A4 | OpenCSD 单独的解码吞吐（去掉去帧、调用栈机） | 决定要多大并行度 |
-| A5 | 关掉 CCI / TS 后 ETM 带宽降多少 | 决定实时是否需要并行 |
-| A6 | 按 A-sync 切段的并行解码与串行解码覆盖并集相同 | 并行设计的前提 |
+| A1 | ETMv4 M 类、不开分支广播时，`InstrRange` 在每个条件直接分支处结束，`last_instr_exec` 对应 taken / not-taken | 分支覆盖整个建立在这条上。用合成的小固件加已知分支序列直接验证。**已验证**（间接）：60 MB 真实数据、3470 万个区间，末条指令的类型和条件性与静态解码 0 处不符，流向校验 3100 万次 0 处不符 |
+| A2 | `num_instr_range` 与 CodeMap 静态扫出的区间指令数一致 | 如果不一致说明指令边界扫描有误。**已验证**：同一份数据 0 处不符 |
+| A3 | 对损坏的数据，OpenCSD 在 NO_SYNC 到下个 A-sync 之间不产出区间 | 子集性质的前提。**不成立**：坏字节后 OpenCSD 常常先沿错路走几个段才报失步，所以加了延迟提交和静态校验（§5.4） |
+| A4 | OpenCSD 单独的解码吞吐（去掉去帧、调用栈机） | 决定要多大并行度。**已测**：单线程 3.6 到 4.5 倍于实时，占流水线 83%（§3.2） |
+| A5 | 关掉 CCI / TS 后 ETM 带宽降多少 | 决定实时是否需要并行。**已测**：带宽降到 1/4，解码只快约 20%，仍需并行（§3.2） |
+| A6 | 按 A-sync 切段的并行解码与串行解码覆盖并集相同 | 并行设计的前提。未验证，留给 P2 |
 
 **已知风险**
 
@@ -469,6 +643,8 @@ P1 交付即可独立使用，不依赖 P2。
   是否总是一致，要在 P0 看实际数据（目前的解码一直用 ELF 链接地址，没出过问题）。
 - **ramfunc。** 在 RAM 里执行的代码，ELF 里有 LMA（在 Flash）和 VMA（在 RAM）两个地址，覆盖要用 VMA，
   现有 C++ ELF 加载按 LMA，覆盖率的 CodeMap 需要同时支持。
+  **现状**：CodeMap 按节的 `sh_addr`（VMA）建，但只收 `SHF_EXECINSTR` 的节；放在 `.data` 里的 ramfunc 不在表里，
+  执行到它的段按 `outside_code` 隔离。H743 的测试固件没有 ramfunc，没有实测。
 - **优化与内联。** `-O2` 以上行覆盖的语义变模糊（§5.5），报告里要标注编译选项，也要提醒用户。
 - **ETMv3。** 当前解码器只支持 ETMv4，Cortex-M3/M4 用 ETMv3，不在范围内。
 - **OpenCSD 内存。** 已知 1.8.3 在某些输入上会出现巨量内存分配；`--memory-limit-mb` 已有，worker 池要继承。
@@ -477,6 +653,7 @@ P1 交付即可独立使用，不依赖 P2。
 **未决问题**
 
 - "确认覆盖"的默认值：1（宽松）还是 2（严格）？倾向默认 1，`--require-lossless` 与 `--confirm 2` 给要求高的场景。
+  **定了**：默认 1。干净链路上多报的来源只有误码，而误码先表现为丢失（§5.4）。
 - 网页是自带，还是只做 lcov 加 Coverage Gutters？倾向 P1 只做后者，P2 再做自带页面。
 - 是否在 P0 就把 `Coverage` 里的"函数覆盖诊断"迁到 `src/`，使其可测？不阻塞本方案，可以独立做。
 
@@ -492,6 +669,47 @@ P1 交付即可独立使用，不依赖 P2。
 - Lauterbach，t32covtool（覆盖率合并与报告工具）：https://support.lauterbach.com/news/posts/pdf/introducing-t32covtool-the-code-coverage-merging-and-reporting-tool
 - AdaCore，GNATcoverage 的 TRACE32 流程：https://docs.adacore.com/gnatcov-docs/trace32.html
 - OpenCSD：`third_party/opencsd`（v1.8.3）；ARM IHI0014（ETM 架构规范，仓库 `A7_Lite/` 里有一份）
+
+PC 程序的覆盖率工具（§2.1）：
+
+- honggfuzz 用法（Intel PT / BTS 硬件覆盖）：https://github.com/google/honggfuzz/blob/master/docs/USAGE.md
+- PTrix: Efficient Hardware-Assisted Fuzzing for COTS Binary：https://arxiv.org/abs/1905.10499
+- kcov：https://github.com/SimonKagstrom/kcov
+- Lighthouse：https://github.com/gaasedelen/lighthouse
+- Dragon Dance（Ghidra）：https://github.com/0ffffffffh/dragondance
+- CutterDRcov：https://github.com/oddcoder/cutterdrcov
+- bncov：https://github.com/ForAllSecure/bncov
+- syzkaller 覆盖说明：https://github.com/google/syzkaller/blob/master/docs/linux/coverage.md
+- vscode-syzkaller-coverage：https://github.com/FlorentRevest/vscode-syzkaller-coverage
+- LLVM continuous 模式与在线合并：https://github.com/llvm/llvm-project/commit/2492b5a12550f7c4bb428c3761392f2ce47fa269
+- Go `runtime/coverage`：https://golang.google.cn/pkg/runtime/coverage/
+- golang-live-coverage-report：https://github.com/ikarishinjieva/golang-live-coverage-report
+- JaCoCo 运行时取数（tcpserver）：https://stackoverflow.com/questions/48186510/dump-execution-data-at-run-time
 - 本仓库：`00-architecture.md`、`03-perfetto-record-bridge.md` §4、`05-plugin-architecture.md`
 
 注：Lauterbach 的 PDF 本次只读到了搜索摘要，没有读到全文；§2 表中 TRACE32 一列来自这些摘要，细节以官方文档为准。
+
+---
+
+## 13. P1 上板结果
+
+STM32H743 跑 CoreMark（-O0，CPU 150 MHz），TRACECLK 75 MHz，4 位口，FPGA v1.1.0，每次 `cortrace cover run --secs 2`。
+ELF 有 28,313 条 Thumb 指令。
+
+| | timing 档位（`TRCCONFIGR=0x811`） | coverage 档位（`0x1`） |
+|---|---|---|
+| 段数 | 39,272 | 11,060 |
+| 隔离 | 1 段（最后一段，870 B） | 1 段（最后一段，386 B） |
+| 丢失 / 校验失败 | 0 / 0 | 0 / 0 |
+| 流向校验 / 条件分支结局 | 2073 万 / 1619 万 | 2073 万 / 1619 万 |
+| 被看到的指令 | 4,678 | 4,690 |
+| CoreMark 五个文件：行 / 指令 / 分支结局 | 595/654、3229/3498、232/294 | 相同 |
+| 去掉库代码后的全部源码：行 / 函数 | 833/3291、59/187 | 相同 |
+
+- 两种档位执行的指令量相同（流向校验次数一样），段数差 3.6 倍，就是 ETM 字节差 3.6 倍；覆盖结果一致，
+  多出的 12 条指令在库函数里（两次运行各自碰到的打印路径不同）。
+- `cover diff` 两次运行：0 行丢失、0 行新增；`cover merge` 后 `--confirm 2` 结果不变。
+- 整条 `cover run` 墙钟 12.5 s（抓 2 s；解码约 4.5 倍于实时，和 §3.2 一致；挂行号和出报告不到 1 s）。
+- 早先一份丢过 UDP 帧的抓取（同一固件，10 MB ETM）：4 次失步、1 次 addr-nacc、18 次校验失败，隔离 85/9,822 段
+  （0.9%），报告标为 `lossy`；CoreMark 五个文件的数字和上表完全相同。
+- lcov 输出能被 `genhtml --branch-coverage` 读入并生成页面。

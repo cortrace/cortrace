@@ -326,7 +326,8 @@ features: DDR3 ring, stream self-test, run-time port width
 | `cortrace fpga ctrl set-width 4` | 设置 FPGA 的 TPIU 位宽并重新武装；还有 `rearm`、`set-bitlen`、`stream-selftest`、`iddr-prbs` |
 | `cortrace fpga health [ip] [--check {health,ddr3,blackbox}] [--reset]` | 读 FPGA 的调试寄存器并给出诊断 |
 | `cortrace fpga net` | ARP 探测 FPGA 接在哪个网口（需要 `CAP_NET_RAW`） |
-| `cortrace arm --platform P --elf fw.elf --probe-telnet HOST:PORT` | 通过常驻 OpenOCD 给目标布防 ETM/ITM/DWT；`--list` 列出平台，`--os none` 裸机（不监视变量），`--no-etm` 只布防 ITM/DWT，`--width` 设 TPIU 位宽 |
+| `cortrace arm --platform P --elf fw.elf --probe-telnet HOST:PORT` | 通过常驻 OpenOCD 给目标布防 ETM/ITM/DWT；`--list` 列出平台，`--os none` 裸机（不监视变量），`--no-etm` 只布防 ITM/DWT，`--width` 设 TPIU 位宽，`--profile coverage` 只要覆盖率时关掉周期计数和时间戳 |
+| `cortrace cover run/report/merge/diff` | 不插桩的代码覆盖率，见 4.6 节 |
 | `cortrace os list` / `os watch --elf fw.elf` / `os resolve …` | 列出 OS 插件 / 打印 DWT 要监视的变量与地址 / 把指针值解析成线程映射 |
 
 **布防**：先起一个不带任何 trace 配置的 OpenOCD，让它常驻（它持有 `C_DEBUGEN`），然后：
@@ -343,6 +344,53 @@ cortrace arm --platform stm32h743 --elf fw.elf --probe-telnet 127.0.0.1:4444
 芯片相关的部分（CoreSight 组件地址、管脚复用、`DBGMCU_CR`）在 `platforms/<名字>.toml` 里；
 新芯片复制一份改地址即可，放到 `~/.config/cortrace/platforms/` 或 `$CORTRACE_PLATFORM_PATH` 就能被找到。
 这等价于 cortrace-fpga 里的 `nxtrace_dap.cfg`，那一份仍然可用。
+
+### 4.6 代码覆盖率
+
+ETM 记下了 CPU 执行过的每一段指令，所以不用改固件、不用插桩就能出覆盖率（对标 Ozone 的 Code Coverage 和
+TRACE32 的 trace 覆盖率；设计和实测见 `07-realtime-coverage.md`）。目前是离线的：先抓几秒，再出报告。
+
+```sh
+cortrace arm --platform stm32h743 --os none --probe-telnet 127.0.0.1:4444 --profile coverage   # 可选
+cortrace cover run --elf fw.elf --secs 2 --tag t1 --exclude '*/Drivers/*'
+```
+
+`--out-dir` 和 `--iface` 同 `capture`。`run` 在输出目录里留下原始抓取 `raw_t1.bin` 和覆盖文件 `cov_t1.json`，
+并在终端打印 Ozone 风格的表：按源文件、按函数给出 Source Lines、Instructions、Branches 三列。
+
+- **ELF 要带 `-g`**，行号来自 DWARF；不带 `-g` 也能出指令和函数覆盖，只是没有行。
+- **四个指标**：指令被看到过就算覆盖；一行里至少一条指令被看到就算这行覆盖（和 lcov、gcov 一样，JSON 里另有
+  `partial`）；分支按结局算，每个条件分支有 taken 和 not-taken 两个；函数里有指令被看到就算覆盖。
+- **只算干净的 trace。** 解码器在每个 A-sync 处切段，段里出现丢数据、或者解出的路径和 ELF 对不上
+  （指令数、分支类型、跳转去向、返回地址），这一段连同前面几段（`--cov-lag`，默认 8）都不计入。
+  报告第二行是会话健康：`complete` 表示没丢数据也没有校验失败；`lossy` 时没看到的代码记作
+  `not_observed`（可能执行过但正好落在丢掉的段里），不是 `uncovered`。
+- **`--confirm 2`**：一条指令或一个分支结局要在两个不同的段里出现过才算。链路有误码（报告是 `lossy`）时用它，
+  可以把误码凑出来的假覆盖压到接近零，代价是只执行过一次的代码不算覆盖。
+- **`--profile coverage`**（`cortrace arm`）：ETM 不发周期计数和时间戳，trace 字节约少到 1/4，FIFO 更不容易溢出；
+  覆盖结果和默认档位相同，但这时抓的数据做不了 Perfetto 时间线。
+- 抓取时丢了 UDP 帧不算失败（`capture` 会报错退出），受影响的段会被隔离。
+- 解码约比实时慢 4.5 倍：抓 2 s 要等 10 s 左右。
+
+换格式、合并、对比：
+
+```sh
+cortrace cover report cov_t1.json --format lcov -o cov.info      # VS Code Coverage Gutters、genhtml
+cortrace cover report cov_t1.json --format cobertura -o cov.xml  # CI
+cortrace cover report cov_t1.json --format json -o rep.json      # 按文件、函数、行的明细
+cortrace cover merge cov_t1.json cov_t2.json -o all.json         # 同一个 ELF 的多次运行相加
+cortrace cover diff base.json all.json --fail-on-regression      # 哪些行、函数不再被覆盖
+cortrace cover report all.json --fail-under lines=80,branches=60 --require-lossless   # CI 门限
+```
+
+`--include` / `--exclude` 按源文件绝对路径的 glob 过滤，可以重复；`--src-root DIR` 让路径显示成相对 DIR。
+退出码：0 正常，1 门限、`--require-lossless` 或 `--fail-on-regression` 没过，2 用法或输入错误。
+覆盖文件是自包含的（带行号、函数和 ELF 的 sha256），`report` / `merge` / `diff` 不再需要 ELF；
+`merge` 只接受同一个 ELF，跨版本对比用 `diff`。
+
+已知限制：没有实时刷新（设计里的 P2）；只支持 Thumb 代码；只认 ELF 里带执行属性的节，在 RAM 里执行的代码（ramfunc）如果放在 `.data` 这类节里，
+执行到它的段会被当作校验失败隔离（报告变成 `lossy`）；
+`-O2` 以上一行源码会散在多处，行覆盖的含义变弱，建议看指令和分支两列。
 
 ## 5. 网页点击模式
 
@@ -491,6 +539,8 @@ cortrace capture --elf fw.elf --secs 1 --width 4 --open        # 独立模式
 cortrace arm --platform stm32h743 --elf fw.elf --probe-telnet 127.0.0.1:4444   # 布防 trace 硬件
 cortrace capture --elf fw.elf --secs 1 --probe-telnet 127.0.0.1:4444           # 线程名由 OS 插件读出
 cortrace capture --notes --itm-port 1 --elf nuttx --secs 1 --tag t --probe-telnet 127.0.0.1:4444   # 另外写出 note 字节流和线程切换日志
+cortrace cover run --elf fw.elf --secs 2 --exclude '*/Drivers/*'   # 代码覆盖率（4.6 节）
+cortrace cover report cov_t.json --format lcov -o cov.info     # 覆盖率换格式（json / lcov / cobertura）
 cortrace serve --elf nuttx --tcbmap m.txt                      # 网页点击（浏览器里点 Start）
 cortrace tcbmap --elf nuttx --telnet 127.0.0.1:4444 --out m.txt  # 线程名映射
 python -m nxtrace merge -o fused.tar --hw hw_t.perfetto \
