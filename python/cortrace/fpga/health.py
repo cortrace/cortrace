@@ -83,6 +83,7 @@ FEATURE_NAMES = {
     2: "stream self-test",
     3: "run-time port width",
     4: "clearable errors",  # CSR 0x10 clears the sticky error and counters
+    5: "run-time IDELAY tap",  # CSR 0x05/0x06 move the sampling point per lane
 }
 FLAG_DIRTY, FLAG_PRERELEASE, FLAG_UNTAGGED = 1, 2, 4
 EARLIEST_BUILD = 1_577_836_800  # 2020-01-01; anything older is not a real stamp

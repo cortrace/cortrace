@@ -135,6 +135,14 @@ def test_fpga_version_and_build_time_are_printed(board, capsys):
     assert "not JTAG" in out
 
 
+def test_idelay_feature_bit_is_named(board, capsys):
+    mem, _ = board
+    healthy(mem)
+    stamp(mem, features=0b11_1110)  # bit5: run-time IDELAY tap (cortrace-fpga 1.1.0)
+    assert run() == 0
+    assert "run-time IDELAY tap" in capsys.readouterr().out
+
+
 def test_bitstream_without_pin_monitors_is_not_judged_on_them(board, capsys):
     """The DDR-ring bitstream ties TRACECLK/GPIO/gap monitors to constants."""
     mem, _ = board

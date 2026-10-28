@@ -32,6 +32,31 @@ def test_set_width_writes_width_then_rearms(fpga, capsys):
     assert "width = 2 bit" in capsys.readouterr().out
 
 
+def test_set_tap_all_lanes_writes_tap_then_rearms(fpga, capsys):
+    assert run(["set-tap", "16"]) == 0
+    assert fpga.csr_writes == [(ctrl.REG_IDELAY_ALL, 16), (ctrl.REG_REARM, 1)]
+    out = capsys.readouterr().out
+    assert "tap = 16" in out and "all data lanes" in out
+
+
+def test_set_tap_one_lane_packs_the_lane_above_the_tap(fpga, capsys):
+    assert run(["set-tap", "12", "--lane", "2"]) == 0
+    assert fpga.csr_writes == [
+        (ctrl.REG_IDELAY_LANE, (2 << 5) | 12),
+        (ctrl.REG_REARM, 1),
+    ]
+    assert "data lane 2" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "args", [["set-tap", "32"], ["set-tap", "-1"], ["set-tap", "5", "--lane", "4"]]
+)
+def test_set_tap_rejects_out_of_range(fpga, args):
+    with pytest.raises(SystemExit):
+        run(args)
+    assert fpga.csr_writes == []
+
+
 def test_set_bitlen_splits_into_lo_and_hi(fpga):
     assert run(["set-bitlen", "4660"]) == 0
     assert fpga.csr_writes == [(ctrl.REG_BITLEN_LO, 0x34), (ctrl.REG_BITLEN_HI, 0x12)]
