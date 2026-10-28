@@ -50,9 +50,16 @@ struct Element {
     uint32_t end_addr = 0; // address after the last instruction (return addr)
     BranchKind branch = BranchKind::None;
     bool last_executed = false; // was the final branch taken?
+    // Detail of the last instruction and the range length, for code coverage
+    // (0 / false when the decoder does not provide them).
+    uint8_t last_instr_sz = 0; // size of the last instruction in bytes (2 or 4)
+    bool last_instr_cond = false; // the last instruction is conditional (IT block too)
+    uint32_t num_instr = 0; // instructions in the range (Thumb: not (end-start)/2)
 
     // Exception fields
     uint32_t exception_number = 0; // ARM exception number (15 = SysTick)
+    bool has_return_addr = false; // the exception carries its preferred return address
+    uint32_t return_addr = 0; // where the exception returns to (has_return_addr)
 
     // Timestamp fields (kind == Timestamp): the 64-bit global-timestamp value
     // OpenCSD decoded from the ETM TIMESTAMP packet. This is the SoC TSGEN

@@ -21,6 +21,13 @@
 #include "opencsd/ocsd_if_types.h"
 #include "opencsd/trc_gen_elem_types.h"
 
+// The instruction decoder is C++ inside libopencsd; its header ships with the
+// source tree (the vendored submodule) but not with every packaged install.
+#if __has_include("i_dec/trc_i_decode.h")
+#include "i_dec/trc_i_decode.h"
+#define CORTRACE_HAVE_OCSD_IDEC 1
+#endif
+
 namespace cortrace {
 namespace {
 
@@ -225,12 +232,17 @@ namespace {
         {
             const uint64_t bidx = static_cast<uint64_t>(idx);
             switch (elem->elem_type) {
-            case OCSD_GEN_TRC_ELEM_INSTR_RANGE:
-                emit(Element::instr_range(static_cast<uint32_t>(elem->st_addr),
+            case OCSD_GEN_TRC_ELEM_INSTR_RANGE: {
+                Element e = Element::instr_range(static_cast<uint32_t>(elem->st_addr),
                     static_cast<uint32_t>(elem->en_addr),
                     classify(elem->last_i_type, elem->last_i_subtype), elem->last_instr_exec != 0,
-                    bidx, elem->has_cc != 0, elem->cycle_count));
+                    bidx, elem->has_cc != 0, elem->cycle_count);
+                e.last_instr_sz = static_cast<uint8_t>(elem->last_instr_sz);
+                e.last_instr_cond = elem->last_instr_cond != 0;
+                e.num_instr = elem->num_instr_range;
+                emit(e);
                 break;
+            }
             case OCSD_GEN_TRC_ELEM_CYCLE_COUNT: {
                 // Standalone cycle-count element: cycles since the last counted
                 // point, not tied to a range. Its own kind so the call-stack
@@ -241,9 +253,13 @@ namespace {
                 emit(e);
                 break;
             }
-            case OCSD_GEN_TRC_ELEM_EXCEPTION:
-                emit(Element::exception(elem->exception_number, bidx));
+            case OCSD_GEN_TRC_ELEM_EXCEPTION: {
+                Element e = Element::exception(elem->exception_number, bidx);
+                e.has_return_addr = elem->excep_ret_addr != 0;
+                e.return_addr = static_cast<uint32_t>(elem->en_addr);
+                emit(e);
                 break;
+            }
             case OCSD_GEN_TRC_ELEM_EXCEPTION_RET:
                 emit(Element::simple(ElementKind::ExceptionRet, bidx));
                 break;
@@ -304,5 +320,49 @@ std::unique_ptr<IDecoder> make_opencsd_decoder(const EtmV4Config& cfg)
         return nullptr;
     return dec;
 }
+
+#if defined(CORTRACE_HAVE_OCSD_IDEC)
+namespace {
+    // Thumb decode with exactly the settings OpenCSD's ETMv4 decoder uses for
+    // a Cortex-M (trc_pkt_decode_etmv4i.cpp): v7-M, IT blocks tracked, DSB/DMB
+    // not waypoints, WFI/WFE not branches (TRCIDR2 of the M7 does not claim it).
+    class OpenCsdInsnDecoder final : public IInsnDecoder {
+    public:
+        bool decode(uint32_t addr, uint32_t opcode, InsnDecodeState& st, Insn& out) override
+        {
+            ocsd_instr_info info;
+            std::memset(&info, 0, sizeof info);
+            info.pe_type.arch = ARCH_V7;
+            info.pe_type.profile = profile_CortexM;
+            info.isa = ocsd_isa_thumb2;
+            info.instr_addr = addr;
+            info.opcode = opcode;
+            info.dsb_dmb_waypoints = 0;
+            info.wfi_wfe_branch = 0;
+            info.track_it_block = 1;
+            info.thumb_it_conditions = st.it_remaining;
+            if (idec_.DecodeInstruction(&info) != OCSD_OK)
+                return false;
+            st.it_remaining = info.thumb_it_conditions;
+            out.size = info.instr_size;
+            out.cond = info.is_conditional != 0;
+            out.waypoint = info.type != OCSD_INSTR_OTHER;
+            out.kind = classify(info.type, info.sub_type);
+            out.target = info.type == OCSD_INSTR_BR ? static_cast<uint32_t>(info.branch_addr) : 0;
+            return true;
+        }
+
+    private:
+        TrcIDecode idec_;
+    };
+} // namespace
+
+std::unique_ptr<IInsnDecoder> make_opencsd_insn_decoder()
+{
+    return std::make_unique<OpenCsdInsnDecoder>();
+}
+#else
+std::unique_ptr<IInsnDecoder> make_opencsd_insn_decoder() { return nullptr; }
+#endif
 
 } // namespace cortrace

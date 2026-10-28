@@ -15,6 +15,7 @@
 //
 // SPDX-License-Identifier: MIT
 #include "cortrace/callstack.hpp"
+#include "cortrace/coverage.hpp"
 #include "cortrace/decoder.hpp"
 #include "cortrace/deframe.hpp"
 #include "cortrace/log.hpp"
@@ -418,6 +419,19 @@ int main(int argc, char** argv)
         .metavar("notes.bin")
         .help("write the ITM stimulus-port byte stream (the NuttX note stream) here; "
               "requires --raw and --switch-stream. Feed it to `nxtrace ... file`.");
+    program.add_argument("--cov-out")
+        .metavar("objcov.json")
+        .help("write object-code coverage (every instruction of the ELF's Thumb code with "
+              "its execution count, conditional branch outcomes, indirect targets and the "
+              "trace health) for `cortrace cover`; needs --elf. Only clean trace "
+              "segments between A-syncs are counted.");
+    program.add_argument("--cov-lag")
+        .metavar("N")
+        .scan<'i', int>()
+        .default_value(8)
+        .help("with --cov-out: segments kept back before they count, so that a loss or a "
+              "cross-check failure can still drop them (default 8, about 8 KB of trace: a "
+              "wrong address can decode as a plausible path for a while before it shows)");
     program.add_argument("--log-level")
         .metavar("LVL")
         .default_value(std::string("warn"))
@@ -554,6 +568,43 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // --cov-out: the static code map of the ELF and the coverage sink.
+    const auto cov_opt = program.present("--cov-out");
+    CodeMap code_map;
+    std::unique_ptr<CoverageSink> cov_sink;
+    AsyncScanner async_scanner;
+    std::vector<uint64_t> async_offsets;
+    if (cov_opt) {
+        if (elf_path.empty()) {
+            std::fprintf(stderr, "error: --cov-out needs --elf\n");
+            return 2;
+        }
+        auto idec = make_opencsd_insn_decoder();
+        if (!idec) {
+            std::fprintf(stderr,
+                "error: --cov-out needs OpenCSD's instruction decoder headers (build with the "
+                "vendored OpenCSD submodule)\n");
+            return 1;
+        }
+        std::string err;
+        if (!CodeMap::from_elf(elf_path, *idec, code_map, err)) {
+            std::fprintf(stderr, "error: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "coverage: %zu instructions in the code map\n", code_map.size());
+        cov_sink = std::make_unique<CoverageSink>(code_map, program.get<int>("--cov-lag"));
+    }
+    // Segments for the coverage sink start at the A-syncs of each chunk; they
+    // must be announced before the chunk is decoded.
+    auto announce_segments = [&](const uint8_t* data, std::size_t n, uint64_t base) {
+        if (!cov_sink)
+            return;
+        async_offsets.clear();
+        async_scanner.scan(data, n, base, async_offsets);
+        for (uint64_t off : async_offsets)
+            cov_sink->add_segment_start(off);
+    };
+
     FILE* f = std::fopen(etm_path.c_str(), "rb");
     if (!f) {
         std::fprintf(stderr, "error: cannot open %s\n", etm_path.c_str());
@@ -623,6 +674,8 @@ int main(int argc, char** argv)
 
     decoder->set_sink([&](const Element& e) {
         cov.observe(e);
+        if (cov_sink)
+            cov_sink->on_element(e);
         // Threads switched in at or before this element's ETM byte run it.
         while (next_switch < thread_schedule.size()
             && thread_schedule[next_switch].first <= e.byte_index) {
@@ -747,6 +800,7 @@ int main(int argc, char** argv)
 
         total = etm_bytes.size();
         build_threads();
+        announce_segments(etm_bytes.data(), etm_bytes.size(), 0);
         if (!decoder->process(etm_bytes.data(), etm_bytes.size())) {
             std::fprintf(stderr, "error: opencsd fatal while decoding deframed stream\n");
             fatal = true;
@@ -756,6 +810,7 @@ int main(int argc, char** argv)
         std::vector<uint8_t> buf(1 << 16);
         std::size_t n;
         while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) {
+            announce_segments(buf.data(), n, total);
             total += n;
             if (!decoder->process(buf.data(), n)) {
                 std::fprintf(stderr,
@@ -849,6 +904,46 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "  MISSED (flow but no slice)      : %zu\n", missed.size());
         for (const auto& p : missed)
             std::fprintf(stderr, "      %-28s (%ld instr ranges)\n", p.second.c_str(), p.first);
+    }
+
+    // ---- object-code coverage (--cov-out) ----------------------------------
+    if (cov_sink) {
+        cov_sink->finish(total);
+        const CoverageHealth& h = cov_sink->health();
+        std::size_t hit = 0;
+        for (uint32_t c : cov_sink->hits())
+            hit += c != 0;
+        std::fprintf(stderr, "\n=== code coverage (clean segments only) ===\n");
+        std::fprintf(stderr, "  instructions hit    : %zu / %zu\n", hit, code_map.size());
+        std::fprintf(stderr,
+            "  segments            : %llu (committed %llu, quarantined %llu = %llu bytes)\n",
+            static_cast<unsigned long long>(h.segments),
+            static_cast<unsigned long long>(h.committed),
+            static_cast<unsigned long long>(h.quarantined),
+            static_cast<unsigned long long>(h.quarantined_bytes));
+        std::fprintf(stderr,
+            "  losses              : lost-sync=%llu addr-nacc=%llu trace-on=%llu "
+            "overflow=%llu\n",
+            static_cast<unsigned long long>(h.lost_sync),
+            static_cast<unsigned long long>(h.addr_nacc),
+            static_cast<unsigned long long>(h.trace_on),
+            static_cast<unsigned long long>(h.overflow));
+        std::fprintf(stderr,
+            "  static cross-check  : outside=%llu count=%llu kind=%llu cond=%llu flow=%llu "
+            "(flow checked %llu, cond outcomes %llu, ranges %llu)\n",
+            static_cast<unsigned long long>(h.outside_code),
+            static_cast<unsigned long long>(h.count_mismatch),
+            static_cast<unsigned long long>(h.kind_mismatch),
+            static_cast<unsigned long long>(h.cond_mismatch),
+            static_cast<unsigned long long>(h.flow_mismatch),
+            static_cast<unsigned long long>(h.flow_checked),
+            static_cast<unsigned long long>(h.cond_outcomes),
+            static_cast<unsigned long long>(h.ranges));
+        if (!cov_sink->write_json(*cov_opt, elf_path)) {
+            std::fprintf(stderr, "error: cannot write coverage to %s\n", cov_opt->c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "wrote object coverage -> %s\n", cov_opt->c_str());
     }
 
     // ---- blind-region (no-coverage) time rate ------------------------------

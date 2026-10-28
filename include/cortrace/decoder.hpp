@@ -13,6 +13,7 @@
 #ifndef CORTRACE_DECODER_HPP
 #define CORTRACE_DECODER_HPP
 
+#include "cortrace/codemap.hpp"
 #include "cortrace/element.hpp"
 
 #include <cstddef>
@@ -79,6 +80,11 @@ public:
 #if defined(CORTRACE_HAVE_OPENCSD)
 // Construct an OpenCSD-backed ETMv4 decoder. Returns nullptr on setup failure.
 std::unique_ptr<IDecoder> make_opencsd_decoder(const EtmV4Config& cfg);
+
+// OpenCSD's own Thumb instruction decoder (the one its ETMv4 decoder follows
+// the program with), set up for a Cortex-M ETMv4 like make_opencsd_decoder.
+// Returns nullptr when this OpenCSD build does not ship its decoder headers.
+std::unique_ptr<IInsnDecoder> make_opencsd_insn_decoder();
 #endif
 
 } // namespace cortrace
