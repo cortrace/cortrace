@@ -92,6 +92,18 @@ def test_etm_is_programmed_and_enabled_with_the_platform_id(plat):
     assert order(probe, 0xE0041010) == [0x810]
 
 
+def test_coverage_profile_drops_cycle_counts_and_timestamps(plat):
+    probe = FakeProbe({0xE004100C: 1})
+    trace_arm.arm(probe, plat, [], profile="coverage", log=lambda _m: None)
+    assert order(probe, 0xE0041010) == [0x1]
+    probe = FakeProbe()
+    with pytest.raises(ArmError, match="unknown ETM profile"):
+        trace_arm.arm(probe, plat, [], profile="fast", log=lambda _m: None)
+    assert not probe.writes and not probe.events  # refused before the halt
+    with pytest.raises(ArmError, match="unknown ETM profile"):
+        trace_arm.arm_etm(trace_arm.Regs(probe), 0xE0041000, 2, "fast")
+
+
 def test_comparators_that_are_not_used_are_switched_off(plat):
     """A comparator armed by an earlier session must not keep emitting."""
     probe = FakeProbe({0xE0001038: 0xD, 0xE0001048: 0xD})

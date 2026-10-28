@@ -77,6 +77,12 @@ def test_no_etm_flag_keeps_the_etm_off(probe):
     assert (0xE0041010, 0x810) not in probe.writes
 
 
+def test_coverage_profile_flag(probe):
+    assert armctl.main(base_args("--os", "none", "--profile", "coverage")) == 0
+    assert (0xE0041010, 0x1) in probe.writes
+    assert (0xE0041010, 0x810) not in probe.writes
+
+
 def test_platform_and_probe_are_required():
     with pytest.raises(SystemExit) as e:
         armctl.main(["--platform", "stm32h743"])

@@ -54,6 +54,14 @@ def build_parser():
     ap.add_argument(
         "--no-etm", action="store_true", help="arm only the ITM/DWT, keep the ETM off"
     )
+    ap.add_argument(
+        "--profile",
+        choices=sorted(trace_arm.ETM_PROFILES),
+        default="timing",
+        help="ETM profile: timing (cycle counts + timestamps, for Perfetto) or "
+        "coverage (branches only, about 4x fewer trace bytes, for `cortrace "
+        "cover`; the Perfetto time bases need timing) (default: %(default)s)",
+    )
     return ap
 
 
@@ -102,7 +110,13 @@ def main(argv=None):
             log(f"watching {item.symbol} at 0x{item.addr:08x}")
         probe = OpenOcdTelnet(args.probe_telnet)
         state = trace_arm.arm(
-            probe, platform, watches, width=args.width, etm=not args.no_etm, log=log
+            probe,
+            platform,
+            watches,
+            width=args.width,
+            etm=not args.no_etm,
+            profile=args.profile,
+            log=log,
         )
     except (
         platdesc.PlatformError,
