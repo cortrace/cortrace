@@ -151,16 +151,27 @@ def run_cmd(cmd, **kw):
     return subprocess.run(cmd, check=False, **kw)
 
 
-def grab(a, raw):
-    """Stream a.secs seconds from the FPGA into `raw`."""
+GRAB_LOST_DATA = 1  # cortrace-grab: file written, but UDP frames were lost
+
+
+def grab(a, raw, allow_loss=False):
+    """Stream a.secs seconds from the FPGA into `raw`. With `allow_loss`, a
+    capture that lost UDP frames is kept (the coverage decoder drops the
+    damaged trace segments); returns False in that case."""
     if a.width is not None:
         iface_args = ["--iface", a.iface] if a.iface else []
         if ctrl.main(iface_args + ["set-width", str(a.width)]) != 0:
             sys.exit("set-width failed")
     grab_bin = find_binary("CORTRACE_GRAB", "cortrace-grab")
     cmd = [grab_bin, a.iface, str(a.secs), raw, "256", "512"]
-    if run_cmd(cmd).returncode != 0:
+    code = run_cmd(cmd).returncode
+    written = os.path.isfile(raw) and os.path.getsize(raw) > 0
+    if code == GRAB_LOST_DATA and allow_loss and written:
+        log("warning: UDP frames were lost in the capture (see seq-gap above)")
+        return False
+    if code != 0:
         sys.exit("cortrace-grab failed")
+    return True
 
 
 def note_path(a):

@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from cortrace import capture
+from cortrace import capture, cover
 from cortrace._paths import find_binary
 
 BINARY = find_binary("CORTRACE_DECODE", "cortrace-decode")
@@ -63,6 +63,18 @@ def test_capture_notes_flags_exist(help_text, tmp_path):
     assert not missing, f"cortrace-decode no longer has: {missing}"
     for flag in ("--itm-note-out", "--itm-note-unwrap"):
         assert flag in cmd
+
+
+@pytest.mark.parametrize("source", ["--raw-in", "--etm-in"])
+def test_cover_flags_exist(help_text, tmp_path, source):
+    """cortrace cover run decodes with --cov-out / --cov-lag."""
+    a = cover.parse_run_args(
+        ["--out-dir", str(tmp_path), "--elf", "e", source, "r", "--phase", "1,0"]
+    )
+    cmd = cover.decode_command(a, "raw", "syms.nm", "obj.json")
+    missing = [f for f in sorted(flags(cmd)) if f not in help_text]
+    assert not missing, f"cortrace-decode no longer has: {missing}"
+    assert "--cov-out" in cmd and "--cov-lag" in cmd
 
 
 def test_version_flag_reports_the_version_file():

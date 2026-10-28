@@ -126,6 +126,25 @@ def test_grab_failures_abort(monkeypatch, tmp_path, which):
     assert ("set-width" if which == "width" else "cortrace-grab") in str(e.value)
 
 
+def test_grab_can_keep_a_capture_that_lost_frames(monkeypatch, tmp_path, capsys):
+    """cortrace-grab exits 1 after a seq gap but the file is written."""
+    codes = iter([1, 1, 2])
+    monkeypatch.setattr(
+        capture,
+        "run_cmd",
+        lambda cmd, **_k: types.SimpleNamespace(returncode=next(codes)),
+    )
+    raw = tmp_path / "raw.bin"
+    raw.write_bytes(b"\0")
+    a = args(tmp_path)
+    assert capture.grab(a, str(raw), allow_loss=True) is False
+    assert "UDP frames were lost" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        capture.grab(a, str(raw))  # plain capture: still an error
+    with pytest.raises(SystemExit):
+        capture.grab(a, str(raw), allow_loss=True)  # not a loss: an error
+
+
 def fake_decode(ok=True, notes=None):
     """run_cmd stand-in: writes the outputs the real decoder would."""
 

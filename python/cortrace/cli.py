@@ -16,6 +16,8 @@ SUMMARIES = {
     "decode": "run cortrace-decode (ETM/DWT/ITM -> Perfetto), arguments passed through",
     "capture": "grab a raw capture from the FPGA streamer, decode it and open",
     "serve": 'Perfetto "Record" target: press Start in the UI to capture and view',
+    "cover": "code coverage from the trace: run, report (text/json/lcov/cobertura), "
+    "merge, diff",
     "tcbmap": "dump the live pid -> thread-name map through OpenOCD",
     "os": "OS plugins: list, find the variable to watch, resolve thread names",
     "arm": "arm ETM/ITM/DWT trace on the target through a running OpenOCD",
@@ -63,6 +65,7 @@ COMMANDS = {
     "decode": _decode,
     "capture": _lazy("capture"),
     "serve": _lazy("serve"),
+    "cover": _lazy("cover"),
     "tcbmap": _lazy("tcbmap"),
     "os": _lazy("osctl"),
     "arm": _lazy("armctl"),
