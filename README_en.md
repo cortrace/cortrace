@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg">
+    <img alt="cortrace" src="docs/assets/logo-wordmark-light.svg" height="72">
+  </picture>
+</p>
+
 # Cortrace
 
 [简体中文](README.md) | **English**
