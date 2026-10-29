@@ -9,12 +9,23 @@
 
 **简体中文** | [English](README_en.md)
 
-**Cortrace** 把 ARM CoreSight ETM/DWT/ITM trace 原始字节流转换成函数级
-[Perfetto](https://ui.perfetto.dev) 时间线：调用栈、RTOS 线程泳道。它只产生硬件 trace；要和 NuttX 的软件 note
-放到同一条时间轴上，用 pynuttx 的 `nxtrace merge`。它用 ARM/Linaro 官方参考解码器
-[OpenCSD](https://github.com/Linaro/OpenCSD) 解码，并自带 FPGA 并口采集器的 PC 侧工具。
+**Cortrace** 是 Cortex-M 硬件 trace 的 PC 端工具链。目标芯片的 ETM、DWT、ITM 从 4 位并行 trace 口输出，
+[cortrace-fpga](https://github.com/cortrace/cortrace-fpga) 采集器把它经千兆网送到 PC（TRACECLK 75 MHz 时约 75 MB/s）；cortrace 负责去帧，
+用 ARM/Linaro 的参考解码器 [OpenCSD](https://github.com/Linaro/OpenCSD) 解码，然后给出两种结果：
 
-> 设计理念与路线图见 [`docs/00-architecture.md`](docs/00-architecture.md)。
+- **时间线**：函数级调用栈、异常和中断各自的轨道、RTOS 线程泳道，写成 [Perfetto](https://ui.perfetto.dev) trace，
+  在浏览器里打开。线程名由 OS 插件（内置 NuttX、FreeRTOS）从 ELF 和目标内存读出。
+- **代码覆盖率**：不改固件、不插桩，按指令、源码行、分支结局和函数统计，输出文本（Ozone 风格）、JSON、lcov、
+  Cobertura。`cortrace cover stream` 可以连续抓几个小时，原始 trace 不落盘。
+
+trace 链路没有校验，所以 cortrace 不猜：丢掉的数据在结果里如实标出，不会拿过期的 PC 编造程序流；覆盖率只统计
+通过静态校验的干净 trace 段，报告里写明丢了多少。
+
+目前在 STM32H743（Cortex-M7，ETMv4）上验证过裸机、NuttX 和 FreeRTOS 固件，以 Ubuntu 22.04 的 `.deb` 发布。
+要把 NuttX 的软件 note 合到同一条时间轴上，用 pynuttx 的 `nxtrace merge`。
+
+> 设计与路线图见 [`docs/00-architecture.md`](docs/00-architecture.md)，覆盖率的设计和实测见
+> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md)。
 
 ## 安装（Ubuntu 22.04 amd64）
 
@@ -31,6 +42,7 @@ cortrace --help
 |------|------|
 | `cortrace capture` | 从 FPGA 抓一段并口 trace → 解码成 Perfetto（`--notes` 另外写出 ITM 上的 note 字节流和硬件线程切换日志，给 `nxtrace merge` 用） |
 | `cortrace serve` | 在 ui.perfetto.dev 的 *Record new trace → Linux → WebSocket 127.0.0.1:8037* 里点 **Start** 即抓取，结果回到同一页面 |
+| `cortrace cover` | 代码覆盖率：`run` 抓几秒离线解码，`stream` 连续抓几小时、原始数据不落盘；`report`/`merge`/`diff` 换格式、合并、对比 |
 | `cortrace decode` | 直接调用 `cortrace-decode`（ETM/DWT/ITM → Perfetto），参数原样透传 |
 | `cortrace tcbmap` | 读活线程名映射 |
 | `cortrace arm` | 通过常驻 OpenOCD 布防 ETM/ITM/DWT（芯片见 `platforms/`） |
@@ -48,7 +60,7 @@ cortrace capture --iface enx0123 --elf fw.elf --secs 1 --width 4 --open
 cortrace serve   --iface enx0123 --elf fw.elf          # 然后在网页里点 Start
 ```
 
-> 本工具不负责在目标上启用 ETM/DWT/ITM：先用调试器配置好并保持连接。
+> 抓取前先布防目标的 ETM/DWT/ITM：用 `cortrace arm`（经常驻 OpenOCD）或自己的调试器，并保持连接。
 > 和 NuttX 的 note 合并由 pynuttx 的 `nxtrace merge` 完成，cortrace 不依赖 pynuttx。
 
 **完整的使用步骤（抓取解码、带 note 的抓取、网页点击、排错）见 [`docs/04-user-guide.md`](docs/04-user-guide.md)。**

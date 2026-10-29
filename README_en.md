@@ -9,14 +9,27 @@
 
 [简体中文](README.md) | **English**
 
-**Cortrace** turns raw ARM CoreSight ETM/DWT/ITM trace bytes into a function-level
-[Perfetto](https://ui.perfetto.dev) timeline: call stacks and RTOS thread lanes. It produces the
-hardware trace only; putting NuttX's software notes on the same time axis is `nxtrace merge` in
-pynuttx. It decodes with the official
-ARM/Linaro reference decoder [OpenCSD](https://github.com/Linaro/OpenCSD) and ships the PC-side
-tools for the FPGA parallel-trace capture appliance.
+**Cortrace** is the PC side of hardware trace for Cortex-M. The target's ETM, DWT and ITM leave the chip on
+its 4-bit parallel trace port; the [cortrace-fpga](https://github.com/cortrace/cortrace-fpga) capture box sends
+them to the PC over gigabit Ethernet (75 MB/s at a 75 MHz TRACECLK). Cortrace deframes the stream, decodes it with the ARM/Linaro
+reference decoder [OpenCSD](https://github.com/Linaro/OpenCSD), and gives you two things:
 
-> Design philosophy and roadmap live in [`docs/00-architecture.md`](docs/00-architecture.md).
+- **A timeline**: function call stacks, one track per exception and interrupt, and RTOS thread lanes, written as
+  a [Perfetto](https://ui.perfetto.dev) trace that opens in the browser. OS plugins (NuttX and FreeRTOS built in)
+  name the threads from the ELF and the target's memory.
+- **Code coverage** with no firmware changes and no instrumentation: instructions, source lines, branch outcomes
+  and functions, reported as text (laid out like Ozone), JSON, lcov or Cobertura. `cortrace cover stream` runs for
+  hours without writing the raw trace to disk.
+
+The trace link has no checksum, so cortrace does not guess: lost data is marked as lost in the results instead of
+being bridged with a stale PC, and coverage counts only clean trace segments that pass static checks, with the
+losses stated in the report.
+
+It is verified on the STM32H743 (Cortex-M7, ETMv4) with bare-metal, NuttX and FreeRTOS firmware, and ships as a
+`.deb` for Ubuntu 22.04. To put NuttX's software notes on the same time axis, use `nxtrace merge` from pynuttx.
+
+> Design and roadmap: [`docs/00-architecture.md`](docs/00-architecture.md). Coverage design and measurements:
+> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md).
 
 ## Install (Ubuntu 22.04 amd64)
 
@@ -35,6 +48,7 @@ Linux >= 5.7).
 |---------|--------------|
 | `cortrace capture` | grab a parallel trace from the FPGA and decode it to Perfetto (`--notes` also writes the bytes on an ITM stimulus port and the hardware thread-switch log, the inputs of `nxtrace merge`) |
 | `cortrace serve` | in ui.perfetto.dev choose *Record new trace -> Linux -> WebSocket 127.0.0.1:8037* and press **Start**: the capture runs and the result comes back in the same page |
+| `cortrace cover` | code coverage: `run` captures a few seconds and decodes offline, `stream` captures for hours without storing the raw trace; `report`/`merge`/`diff` convert, add up and compare |
 | `cortrace decode` | run `cortrace-decode` (ETM/DWT/ITM -> Perfetto) directly, arguments passed through |
 | `cortrace tcbmap` | read the live thread-name map |
 | `cortrace arm` | arm ETM/ITM/DWT through a running OpenOCD (chips live in `platforms/`) |
@@ -54,8 +68,8 @@ cortrace capture --iface enx0123 --elf fw.elf --secs 1 --width 4 --open
 cortrace serve   --iface enx0123 --elf fw.elf          # then press Start in the web page
 ```
 
-> cortrace does not enable ETM/DWT/ITM on the target: configure them with your debugger first and
-> keep it attached. Merging with NuttX's notes is done by `nxtrace merge` in pynuttx; cortrace does
+> Arm the target's ETM/DWT/ITM before capturing: with `cortrace arm` (through a running OpenOCD) or your own
+> debugger, and keep it attached. Merging with NuttX's notes is done by `nxtrace merge` in pynuttx; cortrace does
 > not depend on pynuttx.
 
 **The full walkthrough (capture and decode, capture with notes, click-to-capture in the browser,
