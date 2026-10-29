@@ -129,6 +129,7 @@ private:
     void taint();
     void dirty_current();
     void on_range(const Element& e);
+    void push_call(uint32_t ret);
     void on_exception(const Element& e);
     void on_exception_return();
     void reset_flow();
@@ -164,6 +165,12 @@ private:
     uint32_t expect_ = 0;
     long indirect_site_ = -1; // instruction index of a taken indirect branch
     std::vector<uint32_t> calls_; // shadow call stack: return addresses, kExceptionMark
+    // The frames below this depth were pushed before the last return from an
+    // exception to thread level. An OS may have switched threads there (the
+    // resumed PC can equal the interrupted one, so it cannot be told apart),
+    // and then they belong to another thread: returns through them are only
+    // checked to land after a call, not against the exact address.
+    std::size_t soft_depth_ = 0;
     std::deque<uint32_t> exc_returns_; // return addresses of the pending exceptions
 };
 

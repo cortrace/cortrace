@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 #include "cortrace/coverage.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 
@@ -122,6 +123,7 @@ void CoverageSink::taint()
     // what was learnt about the nesting may come from the bad bytes too
     exc_returns_.clear();
     calls_.clear();
+    soft_depth_ = 0;
 }
 
 void CoverageSink::lose()
@@ -136,6 +138,16 @@ void CoverageSink::reset_flow()
     indirect_site_ = -1;
 }
 
+void CoverageSink::push_call(uint32_t ret)
+{
+    if (calls_.size() >= kMaxCallDepth) {
+        const std::size_t drop = kMaxCallDepth / 2;
+        calls_.erase(calls_.begin(), calls_.begin() + drop);
+        soft_depth_ = soft_depth_ > drop ? soft_depth_ - drop : 0;
+    }
+    calls_.push_back(ret);
+}
+
 void CoverageSink::on_exception(const Element& e)
 {
     reset_flow();
@@ -145,9 +157,7 @@ void CoverageSink::on_exception(const Element& e)
         exc_returns_.push_back(e.return_addr);
     }
     // The handler's calls and returns nest on top of the interrupted code's.
-    if (calls_.size() >= kMaxCallDepth)
-        calls_.erase(calls_.begin(), calls_.begin() + kMaxCallDepth / 2);
-    calls_.push_back(kExceptionMark);
+    push_call(kExceptionMark);
     // The handler starts at its vector, when the vector table is known.
     const auto& vec = map_.vectors();
     if (e.exception_number < vec.size() && vec[e.exception_number] != 0) {
@@ -167,6 +177,12 @@ void CoverageSink::on_exception_return()
             break;
         }
     }
+    if (soft_depth_ > calls_.size())
+        soft_depth_ = calls_.size();
+    // Back at thread level (no handler frame left below): the thread may have
+    // been switched, so the frames now on the stack are no longer exact.
+    if (std::find(calls_.begin(), calls_.end(), kExceptionMark) == calls_.end())
+        soft_depth_ = calls_.size();
     // Returns to where the innermost pending exception was taken.
     if (!exc_returns_.empty()) {
         expect_kind_ = Expect::ExceptionReturn;
@@ -280,6 +296,7 @@ void CoverageSink::on_range(const Element& e)
         if (e.start_addr != expect_) {
             ++health_.exception_return_elsewhere;
             calls_.clear();
+            soft_depth_ = 0;
         }
         break;
     case Expect::None:
@@ -308,9 +325,7 @@ void CoverageSink::on_range(const Element& e)
     expect_kind_ = Expect::Exact;
     const bool taken = last.waypoint && e.last_executed;
     if (taken && (last.kind == BranchKind::DirectCall || last.kind == BranchKind::IndirectCall)) {
-        if (calls_.size() >= kMaxCallDepth)
-            calls_.erase(calls_.begin(), calls_.begin() + kMaxCallDepth / 2);
-        calls_.push_back(last.addr + last.size);
+        push_call(last.addr + last.size);
     }
     if (!taken) {
         expect_ = e.end_addr; // fall-through (or a range cut by an exception: reset then)
@@ -328,10 +343,13 @@ void CoverageSink::on_range(const Element& e)
             calls_.pop_back();
             expect_kind_ = Expect::None;
         } else {
-            expect_kind_ = Expect::Return;
+            const bool soft = calls_.size() <= soft_depth_;
+            expect_kind_ = soft ? Expect::AfterCall : Expect::Return;
             expect_ = calls_.back();
             calls_.pop_back();
         }
+        if (soft_depth_ > calls_.size())
+            soft_depth_ = calls_.size();
     } else {
         expect_ = e.end_addr; // a waypoint that is not a branch (ISB, ...)
     }

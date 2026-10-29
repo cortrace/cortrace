@@ -223,6 +223,35 @@ TEST(coverage_returns_follow_the_shadow_call_stack)
     CHECK_EQ(s.health().return_mismatch, uint64_t(1));
 }
 
+TEST(coverage_frames_below_an_exception_return_are_checked_loosely)
+{
+    // An OS may switch threads in an exception handler and resume at the PC the
+    // other thread was interrupted at, so nothing tells the two apart: the
+    // frames on the shadow stack at that point are only checked to land after
+    // a call. Frames pushed afterwards are still exact.
+    const CodeMap m = test_map();
+    CoverageSink s(m, 0);
+    s.on_element(range(0x104, 0x108, BranchKind::DirectCall, true, 1)); // push 0x108
+    s.on_element(range(0x120, 0x122, BranchKind::None, false, 2)); // cut by the exception
+    Element exc = Element::exception(15, 3);
+    exc.has_return_addr = true;
+    exc.return_addr = 0x122;
+    s.on_element(exc);
+    s.on_element(range(0x130, 0x134, BranchKind::Return, true, 4)); // EXC_RETURN
+    s.on_element(Element::simple(ElementKind::ExceptionRet, 5));
+    s.on_element(range(0x122, 0x124, BranchKind::Return, true, 6)); // resumes at the same PC
+    s.on_element(range(0x128, 0x12a, BranchKind::None, true, 7)); // after BLX R2, not 0x108
+    s.on_element(Element::simple(ElementKind::ExceptionRet, 8)); // nothing pending: reset
+    s.on_element(range(0x104, 0x108, BranchKind::DirectCall, true, 9));
+    s.on_element(range(0x120, 0x124, BranchKind::Return, true, 10));
+    s.on_element(range(0x110, 0x114, BranchKind::Return, true, 11)); // not 0x108: exact
+    s.finish(12);
+    const CoverageHealth& h = s.health();
+    CHECK_EQ(h.exception_return_elsewhere, uint64_t(0));
+    CHECK_EQ(h.flow_mismatch, uint64_t(0));
+    CHECK_EQ(h.return_checked, uint64_t(2));
+    CHECK_EQ(h.return_mismatch, uint64_t(1));
+}
 TEST(coverage_return_without_caller_must_land_after_a_call)
 {
     const CodeMap m = test_map();
