@@ -28,9 +28,9 @@ constexpr int kThreadBoot = -2;
 
 // One emitted slice boundary (begin or end of a function on the timeline).
 struct SliceEvent {
-    uint64_t tick; // monotonic order (real ns applied by the sink via byte_index)
-    uint64_t byte_index; // source ETM byte offset, for time-base lookup
-    bool begin; // true = slice begin, false = slice end
+    uint64_t tick = 0; // monotonic order (real ns applied by the sink via byte_index)
+    uint64_t byte_index = 0; // source ETM byte offset, for time-base lookup
+    bool begin = false; // true = slice begin, false = slice end
     std::string name; // function / ISR name
     int track = 0; // track id: 0 = main thread, >=1 = a per-exception ISR track
     uint64_t etm_ts = 0; // most-recent ETM global timestamp seen before this event
