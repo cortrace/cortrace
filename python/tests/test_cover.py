@@ -2,7 +2,10 @@
 
 import json
 import os
+import signal
 import sys
+import threading
+import time
 import xml.etree.ElementTree as ET
 
 import elffixture
@@ -547,3 +550,147 @@ def test_run_argument_errors(tmp_path, capsys):
         assert msg in capsys.readouterr().err
     a = cover.parse_run_args(base + ["--out-dir", str(tmp_path), "--etm-in", "e"])
     assert a.tag and os.path.isabs(a.elf)
+
+
+# ---- cover stream ------------------------------------------------------------
+FAKE_COV = """
+import json, os, signal, sys, time
+args = sys.argv[1:]
+out = args[args.index("--out") + 1]
+with open(sys.argv[0] + ".args", "w") as f:
+    json.dump(args, f)
+mode = os.environ.get("FAKE_COV_MODE", "ok")
+if mode == "fail":
+    print("cortrace-cov: no ETM A-sync", file=sys.stderr)
+    sys.exit(3)
+if mode == "nofile":
+    sys.exit(0)
+stop = []
+signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+if mode == "wait":  # a live capture: runs until it is told to stop
+    open(sys.argv[0] + ".ready", "w").close()
+    while not stop:
+        time.sleep(0.02)
+json.dump({"format": "cortrace-objcov", "version": 1, "commit_lag": 8,
+           "health": {"segments": 5, "committed": 4, "quarantined": 1, "udp_gaps": 1},
+           "insns": [[16, 2, 0, 3, 2], [18, 2, 0, 0, 0]],
+           "branches": [], "indirect": []}, open(out, "w"))
+"""
+
+
+@pytest.fixture
+def fake_cov(tmp_path, monkeypatch):
+    """A fake cortrace-cov and an ELF without debug info."""
+    script = tmp_path / "fake_cov.py"
+    script.write_text(FAKE_COV)
+    wrapper = tmp_path / "cortrace-cov"
+    wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("CORTRACE_COV", str(wrapper))
+    monkeypatch.delenv("CORTRACE_OUT_DIR", raising=False)
+    monkeypatch.delenv("CORTRACE_IFACE", raising=False)
+    monkeypatch.delenv("FAKE_COV_MODE", raising=False)
+    elf = elffixture.build(tmp_path, "nodebug", SOURCE, "-g0")
+    return {"elf": elf, "args": str(script) + ".args", "ready": str(script) + ".ready"}
+
+
+def test_stream_runs_cortrace_cov_and_reports(tmp_path, fake_cov, capsys):
+    out = tmp_path / "out"
+    argv = ["stream", "--elf", fake_cov["elf"], "--out-dir", str(out), "--tag", "s"]
+    argv += ["--iface", "eth7", "--secs", "90", "--workers", "6", "--cov-lag", "5"]
+    argv += ["--phase", "1,0", "--format", "json"]
+    assert cover.main(argv) == 0
+    with open(fake_cov["args"], encoding="utf-8") as f:
+        args = json.load(f)
+    assert args[args.index("--iface") + 1] == "eth7"
+    assert args[args.index("--secs") + 1] == "90"
+    assert args[args.index("--workers") + 1] == "6"
+    assert args[args.index("--cov-lag") + 1] == "5"
+    assert args[args.index("--phase") + 1] == "1,0"
+    assert "--raw-in" not in args
+    cov = covmodel.load(str(out / "cov_s.json"))
+    assert cov["runs"][0]["tag"] == "s" and cov["runs"][0]["trace"] == "stream"
+    assert cov["health"]["udp_gaps"] == 1
+    assert not os.path.exists(out / "objcov_s.json")  # only the coverage file is kept
+    assert sorted(os.listdir(out)) == ["cov_s.json"]  # and the trace was never stored
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "lossy"  # a UDP gap is a loss
+
+
+def test_stream_replays_a_file_and_stops_on_a_signal(tmp_path, fake_cov, monkeypatch):
+    raw = tmp_path / "raw.bin"
+    raw.write_bytes(b"\0")
+    out = tmp_path / "o"
+    argv = ["stream", "--elf", fake_cov["elf"], "--out-dir", str(out), "--tag", "r"]
+    assert cover.main(argv + ["--raw-in", str(raw), "--require-lossless"]) == 1
+    with open(fake_cov["args"], encoding="utf-8") as f:
+        args = json.load(f)
+    assert args[args.index("--raw-in") + 1] == str(raw)
+    assert "--iface" not in args and "--secs" not in args
+
+    # a capture with no end: Ctrl-C (here SIGTERM to us) stops it and the
+    # report is still made from what it saw
+    monkeypatch.setenv("FAKE_COV_MODE", "wait")
+    done = {}
+
+    def stopper():
+        for _ in range(500):
+            if os.path.exists(fake_cov["ready"]):
+                break
+            time.sleep(0.02)
+        os.kill(os.getpid(), signal.SIGTERM)
+        done["sent"] = True
+
+    th = threading.Thread(target=stopper)
+    th.start()
+    code = cover.main(argv + ["--raw-in", str(raw), "--tag", "w", "--no-functions"])
+    th.join()
+    assert done.get("sent") and code == 0
+    assert os.path.isfile(out / "cov_w.json")
+
+
+def test_stream_failures(tmp_path, fake_cov, monkeypatch, capsys):
+    base = ["stream", "--elf", fake_cov["elf"], "--out-dir", str(tmp_path / "o")]
+    base += ["--raw-in", str(tmp_path / "r"), "--tag", "f"]
+    monkeypatch.setenv("FAKE_COV_MODE", "fail")
+    assert cover.main(base) == 2
+    assert "exit code 3" in capsys.readouterr().err
+    monkeypatch.setenv("FAKE_COV_MODE", "nofile")
+    assert cover.main(base) == 2  # it said it was fine but wrote nothing
+    assert not os.path.exists(tmp_path / "o" / "cov_f.json")
+    monkeypatch.setenv("FAKE_COV_MODE", "ok")
+    assert cover.main(base[:2] + ["/missing.elf"] + base[3:]) == 2
+    assert "ELF not found" in capsys.readouterr().err
+    monkeypatch.setenv("CORTRACE_COV", str(tmp_path / "no-such-binary"))
+    assert cover.main(base) == 2
+    assert "cannot run" in capsys.readouterr().err
+
+
+def test_stream_argument_errors(tmp_path, capsys):
+    base = ["--elf", "x.elf"]
+    for extra, msg in (
+        ([], "--out-dir is required"),
+        (["--out-dir", str(tmp_path)], "capture NIC not given"),
+        (["--out-dir", str(tmp_path), "--raw-in", "r", "--secs", "-1"], "--secs"),
+        (["--out-dir", str(tmp_path), "--raw-in", "r", "--chunk-kb", "1"], "chunk-kb"),
+    ):
+        with pytest.raises(SystemExit) as e:
+            cover.parse_stream_args(base + extra)
+        assert e.value.code == 2
+        assert msg in capsys.readouterr().err
+    with pytest.raises(SystemExit):  # one source only
+        cover.parse_stream_args(
+            base + ["--out-dir", str(tmp_path), "--iface", "e", "--raw-in", "r"]
+        )
+    a = cover.parse_stream_args(base + ["--out-dir", str(tmp_path), "--iface", "e"])
+    assert a.tag and a.secs == 0 and os.path.isabs(a.elf)
+    cmd = cover.stream_command(a, "o.json")
+    assert "--secs" not in cmd and "--rcvbuf-mb" in cmd
+
+
+def test_losses_include_the_streaming_counters():
+    for key in ("udp_gaps", "dropped_chunks", "decode_fatal"):
+        assert covmodel.losses({key: 2}) == 2
+    assert not covmodel.is_complete({"dropped_chunks": 1})
+    assert covmodel.is_complete({"udp_lost_frames": 40, "dropped_bytes": 9})

@@ -3,6 +3,8 @@
   run     capture (or take a raw file), decode with --cov-out, attach the
           source lines and functions of the ELF, write cov_<tag>.json and
           print a report
+  stream  capture for as long as you like (hours) without writing the raw
+          trace to disk: decode it live on many threads, then report
   report  report a coverage file as text, JSON, lcov or Cobertura
   merge   add up several runs of the same ELF
   diff    compare two coverage files (e.g. a baseline and a new build)
@@ -18,6 +20,7 @@ check failed, 2 usage or input error.
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -287,6 +290,173 @@ def cmd_run(argv):
     return emit(run(a), a)
 
 
+# ---- stream -----------------------------------------------------------------
+STREAM_NEEDS_SPACE = (
+    64 * 1024 * 1024
+)  # the coverage files only: the trace is never stored
+
+
+def parse_stream_args(argv):
+    ap = argparse.ArgumentParser(
+        prog="cortrace cover stream",
+        description="live coverage for captures of hours: the trace is decoded as it "
+        "arrives and never written to disk. Stop with Ctrl-C (or --secs); the "
+        "report is made from what was seen.",
+    )
+    ap.add_argument(
+        "--out-dir",
+        default=os.environ.get("CORTRACE_OUT_DIR"),
+        help="directory for cov_<tag>.json (required; default: $CORTRACE_OUT_DIR)",
+    )
+    ap.add_argument("--elf", required=True, help="firmware ELF (with -g for lines)")
+    src = ap.add_mutually_exclusive_group()
+    src.add_argument(
+        "--iface",
+        default=os.environ.get("CORTRACE_IFACE"),
+        help="capture NIC (default: $CORTRACE_IFACE)",
+    )
+    src.add_argument(
+        "--raw-in", default=None, help="replay a raw capture file instead of a NIC"
+    )
+    ap.add_argument(
+        "--secs",
+        type=float,
+        default=0.0,
+        help="stop after this many seconds (default: 0, until Ctrl-C)",
+    )
+    ap.add_argument("--tag", default=None, help="file name suffix (default: timestamp)")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        metavar="N",
+        help="decoder threads (default: 0, cores - 4 and at most 16)",
+    )
+    ap.add_argument(
+        "--cov-lag",
+        type=int,
+        default=8,
+        metavar="N",
+        help="segments held back before they count (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--chunk-kb",
+        type=int,
+        default=1024,
+        metavar="KB",
+        help="ETM bytes per chunk, one chunk per decoder thread (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--checkpoint-secs",
+        type=float,
+        default=300.0,
+        help="rewrite the coverage file this often, so that a crash loses at most "
+        "this much (default: %(default)s; 0 only at the end)",
+    )
+    ap.add_argument(
+        "--status-secs",
+        type=float,
+        default=10.0,
+        help="print a status line this often (default: %(default)s; 0 never)",
+    )
+    ap.add_argument("--phase", default=None, help="lock the deframe phase, e.g. 1,0")
+    ap.add_argument(
+        "--rcvbuf-mb",
+        type=int,
+        default=256,
+        help="kernel receive buffer asked for (default: %(default)s; the kernel caps "
+        "it at net.core.rmem_max)",
+    )
+    ap.add_argument("--nm", default=None, help=argparse.SUPPRESS)
+    add_report_options(ap)
+    a = ap.parse_args(argv)
+    if not a.out_dir:
+        ap.error("--out-dir is required (or set $CORTRACE_OUT_DIR)")
+    if not a.raw_in and not a.iface:
+        ap.error("capture NIC not given: pass --iface or set $CORTRACE_IFACE")
+    if a.secs < 0 or a.cov_lag < 0 or a.workers < 0 or a.chunk_kb < 16:
+        ap.error("--secs, --cov-lag and --workers must be >= 0 and --chunk-kb >= 16")
+    a.out_dir = os.path.abspath(a.out_dir)
+    a.elf = os.path.abspath(a.elf)
+    a.tag = a.tag or time.strftime("%Y%m%d-%H%M%S")
+    return a
+
+
+def stream_command(a, objcov):
+    """cortrace-cov command line."""
+    cmd = [find_binary("CORTRACE_COV", "cortrace-cov"), "--elf", a.elf, "--out", objcov]
+    if a.raw_in:
+        cmd += ["--raw-in", os.path.abspath(a.raw_in)]
+    else:
+        cmd += ["--iface", a.iface, "--rcvbuf-mb", str(a.rcvbuf_mb)]
+        if a.secs > 0:
+            cmd += ["--secs", f"{a.secs:g}"]
+    cmd += ["--cov-lag", str(a.cov_lag), "--chunk-kb", str(a.chunk_kb)]
+    cmd += ["--checkpoint-secs", f"{a.checkpoint_secs:g}"]
+    cmd += ["--status-secs", f"{a.status_secs:g}"]
+    if a.workers:
+        cmd += ["--workers", str(a.workers)]
+    if a.phase:
+        cmd += ["--phase", a.phase]
+    return cmd
+
+
+def wait_for(proc):
+    """Wait for the capture to end. Ctrl-C reaches the child as well (same
+    terminal) and makes it finish and write its file, so it is not ours to act
+    on: the report comes after. A SIGTERM sent to us only is passed on."""
+    old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    old_term = signal.signal(signal.SIGTERM, lambda *_: proc.send_signal(signal.SIGINT))
+    try:
+        return proc.wait()
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGTERM, old_term)
+
+
+def stream(a):
+    """Capture live, then make cov_<tag>.json; returns the coverage dict."""
+    os.makedirs(a.out_dir, exist_ok=True)
+    if not os.path.isfile(a.elf):
+        raise covmodel.CovError(f"ELF not found: {a.elf}")
+    runstore.require_space(a.out_dir, STREAM_NEEDS_SPACE, "the coverage files")
+    objcov = os.path.join(a.out_dir, f"objcov_{a.tag}.json")
+    cmd = stream_command(a, objcov)
+    log("$ " + " ".join(cmd))
+    started = time.time()
+    try:
+        proc = subprocess.Popen(cmd)
+    except OSError as exc:
+        raise covmodel.CovError(f"cannot run {cmd[0]}: {exc.strerror}") from exc
+    code = wait_for(proc)
+    secs = round(time.time() - started, 1)
+    try:
+        if code != 0 or not os.path.isfile(objcov):
+            raise covmodel.CovError(
+                f"cortrace-cov failed (exit code {code}); see its messages above"
+            )
+        obj = covmodel.load_objcov(objcov)
+    finally:
+        if os.path.exists(objcov):
+            os.remove(objcov)
+    meta = {
+        "tag": a.tag,
+        "captured": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "secs": secs,
+        "trace": "stream",
+    }
+    cov = covmodel.attach_source(obj, a.elf, meta)
+    path = os.path.join(a.out_dir, f"cov_{a.tag}.json")
+    covmodel.save(cov, path)
+    log(f"coverage -> {path}")
+    return cov
+
+
+def cmd_stream(argv):
+    a = parse_stream_args(argv)
+    return emit(stream(a), a)
+
+
 # ---- report / merge / diff --------------------------------------------------
 def cmd_report(argv):
     ap = argparse.ArgumentParser(
@@ -416,6 +586,7 @@ def cmd_diff(argv):
 
 COMMANDS = {
     "run": cmd_run,
+    "stream": cmd_stream,
     "report": cmd_report,
     "merge": cmd_merge,
     "diff": cmd_diff,
@@ -427,7 +598,7 @@ def main(argv=None):
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in COMMANDS:
         print(__doc__.strip())
         print(
-            "\nusage: cortrace cover {run,report,merge,diff} [options]  (--help each)"
+            "\nusage: cortrace cover {run,stream,report,merge,diff} [options]  (--help each)"
         )
         if argv and argv[0] not in ("-h", "--help"):
             print(f"\ncortrace cover: unknown command {argv[0]!r}", file=sys.stderr)

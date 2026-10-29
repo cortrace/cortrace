@@ -37,8 +37,17 @@ FLAG_COND = 0x8
 FLAG_WAYPOINT = 0x10
 KIND_NAMES = ("none", "direct", "call", "indirect_call", "indirect", "return")
 
-# Health counters that mean trace was lost (the decoder had to resync).
-LOSS_KEYS = ("lost_sync", "addr_nacc", "trace_on", "overflow")
+# Health counters that mean trace was lost: the decoder had to resync, UDP
+# frames went missing, or the streaming capture gave a chunk up.
+LOSS_KEYS = (
+    "lost_sync",
+    "addr_nacc",
+    "trace_on",
+    "overflow",
+    "udp_gaps",
+    "dropped_chunks",
+    "decode_fatal",
+)
 # Health counters that mean the decoded path disagreed with the ELF.
 MISMATCH_KEYS = (
     "outside_code",

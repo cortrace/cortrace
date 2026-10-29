@@ -327,7 +327,7 @@ features: DDR3 ring, stream self-test, run-time port width
 | `cortrace fpga health [ip] [--check {health,ddr3,blackbox}] [--reset]` | 读 FPGA 的调试寄存器并给出诊断 |
 | `cortrace fpga net` | ARP 探测 FPGA 接在哪个网口（需要 `CAP_NET_RAW`） |
 | `cortrace arm --platform P --elf fw.elf --probe-telnet HOST:PORT` | 通过常驻 OpenOCD 给目标布防 ETM/ITM/DWT；`--list` 列出平台，`--os none` 裸机（不监视变量），`--no-etm` 只布防 ITM/DWT，`--width` 设 TPIU 位宽，`--profile coverage` 只要覆盖率时关掉周期计数和时间戳 |
-| `cortrace cover run/report/merge/diff` | 不插桩的代码覆盖率，见 4.6 节 |
+| `cortrace cover run/stream/report/merge/diff` | 不插桩的代码覆盖率，见 4.6、4.7 节 |
 | `cortrace os list` / `os watch --elf fw.elf` / `os resolve …` | 列出 OS 插件 / 打印 DWT 要监视的变量与地址 / 把指针值解析成线程映射 |
 
 **布防**：先起一个不带任何 trace 配置的 OpenOCD，让它常驻（它持有 `C_DEBUGEN`），然后：
@@ -348,7 +348,7 @@ cortrace arm --platform stm32h743 --elf fw.elf --probe-telnet 127.0.0.1:4444
 ### 4.6 代码覆盖率
 
 ETM 记下了 CPU 执行过的每一段指令，所以不用改固件、不用插桩就能出覆盖率（对标 Ozone 的 Code Coverage 和
-TRACE32 的 trace 覆盖率；设计和实测见 `07-realtime-coverage.md`）。目前是离线的：先抓几秒，再出报告。
+TRACE32 的 trace 覆盖率；设计和实测见 `07-realtime-coverage.md`）。`cover run` 先抓几秒再离线解码；要抓几分钟到几小时用 `cover stream`（4.7 节）。
 
 ```sh
 cortrace arm --platform stm32h743 --os none --probe-telnet 127.0.0.1:4444 --profile coverage   # 可选
@@ -388,9 +388,42 @@ cortrace cover report all.json --fail-under lines=80,branches=60 --require-lossl
 覆盖文件是自包含的（带行号、函数和 ELF 的 sha256），`report` / `merge` / `diff` 不再需要 ELF；
 `merge` 只接受同一个 ELF，跨版本对比用 `diff`。
 
-已知限制：没有实时刷新（设计里的 P2）；只支持 Thumb 代码；只认 ELF 里带执行属性的节，在 RAM 里执行的代码（ramfunc）如果放在 `.data` 这类节里，
+已知限制：`run` 只能抓几秒（原始数据先落盘），长时间抓取用 4.7 节的 `stream`；只支持 Thumb 代码；只认 ELF 里带执行属性的节，在 RAM 里执行的代码（ramfunc）如果放在 `.data` 这类节里，
 执行到它的段会被当作校验失败隔离（报告变成 `lossy`）；
 `-O2` 以上一行源码会散在多处，行覆盖的含义变弱，建议看指令和分支两列。
+
+### 4.7 长时间覆盖率抓取（`cover stream`）
+
+测试要跑几分钟到几小时，原始 trace 每秒 75 MB，存不下也不该存：一小时是 270 GB，会把 SSD 写坏。
+`cover stream` 不存原始数据：收到的 UDP 数据在内存里去帧、切块，十几个线程并行解码，结果合并成一份覆盖率，
+磁盘上只有一个约 1 MB 的覆盖文件，定期整个重写（先写临时文件再改名，崩溃也不会留下半个文件）。
+
+```sh
+cortrace arm --platform stm32h743 --os none --probe-telnet 127.0.0.1:4444 --profile coverage
+cortrace cover stream --elf fw.elf --out-dir out --iface <nic> --secs 3600 --exclude '*/Drivers/*'
+```
+
+- `--secs 0`（默认）一直抓到 Ctrl-C。Ctrl-C 之后会收尾、写最终文件、再出报告，不会丢数据。
+  `kill -USR1 <cortrace-cov 的 pid>` 立即写一份 checkpoint。
+- 每 10 s 一行状态：接收速率、ETM 速率、已解块数和丢块数、队列、忙的线程数、命中的指令数、UDP 缺口数、内存。
+  `--status-secs` 调整，`--checkpoint-secs`（默认 300）决定崩溃最多丢多久。
+- 报告选项（`--format`、`--include/--exclude`、`--confirm`、`--fail-under`、`--require-lossless` ...）与 `cover run` 相同，
+  输出目录里留下 `cov_<tag>.json`，可以和别的次数 `merge`。
+- `--workers` 默认是核数减 4、最多 16。解码比实时慢约 4 倍（取决于固件），线程够多才跟得上；
+  状态行里 `queue` 一直是 0、`dropped` 是 0 就说明跟得上。
+- 只支持 4 位 trace 口、ETMv4。`--raw-in 文件` 可以回放一份原始抓取（用于验证，不丢任何块）。
+
+**丢数据怎么处理。** UDP 帧丢了（序号缺口）会被记下来：缺口前的最后几段、缺口后到下一个 A-sync 之间的数据都不计入，
+报告变成 `lossy`，没看到的代码记作 `not_observed`。解码线程来不及时丢整块并计数（`dropped_chunks`），不会拖慢接收。
+内核接收缓冲不够大是 UDP 丢帧最常见的原因：`cortrace-cov` 请求 256 MB，但内核按 `net.core.rmem_max` 截断（Ubuntu 默认 10 MB，
+约 0.28 s 的数据），启动时会提醒。小时级抓取建议：
+
+```sh
+sudo sysctl -w net.core.rmem_max=268435456
+```
+
+**与 `cover run` 结果的差别。** 同一份数据上，`stream` 不会比 `run` 多报任何指令；它多隔离的只有流开头第一个 A-sync 之前的那一小段
+（还没同步的解码器给出的区间不可信）。每个块的第一个区间没有"上一个区间去哪"可检查，所以流向校验次数略少，由前一块多解的几个段补上。
 
 ## 5. 网页点击模式
 
@@ -540,6 +573,7 @@ cortrace arm --platform stm32h743 --elf fw.elf --probe-telnet 127.0.0.1:4444   #
 cortrace capture --elf fw.elf --secs 1 --probe-telnet 127.0.0.1:4444           # 线程名由 OS 插件读出
 cortrace capture --notes --itm-port 1 --elf nuttx --secs 1 --tag t --probe-telnet 127.0.0.1:4444   # 另外写出 note 字节流和线程切换日志
 cortrace cover run --elf fw.elf --secs 2 --exclude '*/Drivers/*'   # 代码覆盖率（4.6 节）
+cortrace cover stream --elf fw.elf --iface <nic> --secs 3600       # 小时级覆盖率，不存原始数据（4.7 节）
 cortrace cover report cov_t.json --format lcov -o cov.info     # 覆盖率换格式（json / lcov / cobertura）
 cortrace serve --elf nuttx --tcbmap m.txt                      # 网页点击（浏览器里点 Start）
 cortrace tcbmap --elf nuttx --telnet 127.0.0.1:4444 --out m.txt  # 线程名映射

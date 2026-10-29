@@ -16,6 +16,7 @@ from cortrace import capture, cover
 from cortrace._paths import find_binary
 
 BINARY = find_binary("CORTRACE_DECODE", "cortrace-decode")
+COV_BINARY = find_binary("CORTRACE_COV", "cortrace-cov")
 
 pytestmark = pytest.mark.skipif(
     not (os.path.isfile(BINARY) and os.access(BINARY, os.X_OK)),
@@ -86,3 +87,24 @@ def test_version_flag_reports_the_version_file():
     with open(version_file, encoding="utf-8") as f:
         want = f.read().strip()
     assert out == want or out.startswith(want + "+"), f"{out!r} vs VERSION {want!r}"
+
+
+@pytest.mark.skipif(
+    not (os.path.isfile(COV_BINARY) and os.access(COV_BINARY, os.X_OK)),
+    reason="cortrace-cov not built",
+)
+@pytest.mark.parametrize("source", ["--raw-in", "--iface"])
+def test_cover_stream_flags_exist(tmp_path, source):
+    """`cortrace cover stream` runs cortrace-cov with these options."""
+    out = subprocess.run(
+        [COV_BINARY, "--help"], capture_output=True, text=True, check=False
+    )
+    help_text = out.stdout + out.stderr
+    a = cover.parse_stream_args(
+        ["--out-dir", str(tmp_path), "--elf", "e", source, "x", "--secs", "5"]
+        + ["--workers", "4", "--phase", "1,0"]
+    )
+    cmd = cover.stream_command(a, "obj.json")
+    missing = [f for f in sorted(flags(cmd)) if f not in help_text]
+    assert not missing, f"cortrace-cov no longer has: {missing}"
+    assert "--cov-lag" in cmd and "--checkpoint-secs" in cmd
