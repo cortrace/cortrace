@@ -1,27 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 716 120" width="716" height="120" role="img" aria-labelledby="t">
   <title id="t">cortrace</title>
   <defs>
-    <linearGradient id="wl-c" x1="60" y1="100" x2="330" y2="412" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#3B82F6"/></linearGradient>
-    <linearGradient id="wl-bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0B1020"/><stop offset="1" stop-color="#18264A"/></linearGradient>
+    <linearGradient id="wl-w" x1="90" y1="120" x2="330" y2="392" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2DD4BF"/><stop offset="1" stop-color="#818CF8"/></linearGradient>
+    <linearGradient id="wl-bg" x1="0" y1="0" x2="0" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#141C33"/><stop offset="1" stop-color="#0A0F1C"/></linearGradient>
   </defs>
   <g transform="scale(0.234375)">
     <rect width="512" height="512" rx="112" fill="url(#wl-bg)"/>
-    <path d="M299.3 162.4 A128 128 0 1 0 299.3 349.6" fill="none" stroke="url(#wl-c)" stroke-width="56" stroke-linecap="round"/>
-    <line x1="168" y1="208" x2="396" y2="208" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="1"/>
-    <circle cx="402" cy="208" r="11" fill="#22D3EE"/>
-    <line x1="168" y1="240" x2="436" y2="240" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="1"/>
-    <circle cx="442" cy="240" r="11" fill="#FBBF24"/>
-    <line x1="168" y1="272" x2="380" y2="272" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="0.8"/>
-    <circle cx="386" cy="272" r="11" fill="#22D3EE"/>
-    <line x1="168" y1="304" x2="412" y2="304" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="0.6"/>
-    <circle cx="418" cy="304" r="11" fill="#22D3EE"/>
+    <path d="M312 164.6 A134 134 0 1 0 312 347.4" fill="none" stroke="url(#wl-w)" stroke-width="66" stroke-linecap="round"/>
+  <path d="M196 290 H252 V222 H318 V290 H372 V222 H430" fill="none" stroke="#FBBF24" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
   <g fill="none" stroke="#0F172A" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
     <path d="M211 40.7 A30 30 0 1 0 211 79.3"/>
     <circle cx="265" cy="60" r="30"/>
     <path d="M319 90 V30"/>
     <path d="M319 52 C319 36 331 30 349 30"/>
-    <path d="M387 16 V76 Q387 90 403 90"/>
+    <path d="M387 14 V76 Q387 90 403 90"/>
     <path d="M373 30 H405"/>
     <path d="M429 90 V30"/>
     <path d="M429 52 C429 36 441 30 459 30"/>

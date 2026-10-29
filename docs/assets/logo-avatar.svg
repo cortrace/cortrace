@@ -1,17 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="t">
   <title id="t">cortrace</title>
   <defs>
-    <linearGradient id="ct-c" x1="60" y1="100" x2="330" y2="412" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#3B82F6"/></linearGradient>
-    <linearGradient id="ct-bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0B1020"/><stop offset="1" stop-color="#18264A"/></linearGradient>
+    <linearGradient id="ct-w" x1="90" y1="120" x2="330" y2="392" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2DD4BF"/><stop offset="1" stop-color="#818CF8"/></linearGradient>
+    <linearGradient id="ct-bg" x1="0" y1="0" x2="0" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#141C33"/><stop offset="1" stop-color="#0A0F1C"/></linearGradient>
   </defs>
   <rect width="512" height="512" rx="0" fill="url(#ct-bg)"/>
-  <path d="M299.3 162.4 A128 128 0 1 0 299.3 349.6" fill="none" stroke="url(#ct-c)" stroke-width="56" stroke-linecap="round"/>
-    <line x1="168" y1="208" x2="396" y2="208" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="1"/>
-    <circle cx="402" cy="208" r="11" fill="#22D3EE"/>
-    <line x1="168" y1="240" x2="436" y2="240" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="1"/>
-    <circle cx="442" cy="240" r="11" fill="#FBBF24"/>
-    <line x1="168" y1="272" x2="380" y2="272" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="0.8"/>
-    <circle cx="386" cy="272" r="11" fill="#22D3EE"/>
-    <line x1="168" y1="304" x2="412" y2="304" stroke="#22D3EE" stroke-width="14" stroke-linecap="round" opacity="0.6"/>
-    <circle cx="418" cy="304" r="11" fill="#22D3EE"/>
+  <path d="M312 164.6 A134 134 0 1 0 312 347.4" fill="none" stroke="url(#ct-w)" stroke-width="66" stroke-linecap="round"/>
+  <path d="M196 290 H252 V222 H318 V290 H372 V222 H430" fill="none" stroke="#FBBF24" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
