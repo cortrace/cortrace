@@ -104,6 +104,54 @@ DeframeResult deframe_raw_capture(const uint8_t* raw, std::size_t len, int want_
 // Count ETMv4 A-syncs (>= 11 zero bytes followed by 0x80) in a byte stream.
 int count_etmv4_async(const uint8_t* data, std::size_t len);
 
+// The same front end for a stream that never ends (cortrace-cov): raw bytes go
+// in as they arrive, in pieces of any size, and the bytes of one ATB stream
+// come out. Fed the whole capture in any split it gives exactly what
+// deframe_raw_capture(search=false) gives, because it runs the same steps one
+// byte at a time with the state kept in between.
+//
+// The phase must be known (it is a property of the wiring: find it once with
+// deframe_raw_capture on a prefix). Only the 4-bit port is supported.
+class StreamDeframer {
+public:
+    static bool supported(const DeframePhase& phase) { return phase.width == 4; }
+
+    // want_stream < 0 keeps every stream. Requires supported(phase).
+    StreamDeframer(const DeframePhase& phase, int want_stream);
+
+    // Appends the bytes of the wanted stream found in raw[0..len) to `out`.
+    void feed(const uint8_t* raw, std::size_t len, std::vector<uint8_t>& out);
+
+    // The raw stream was interrupted (frames lost): forget the half-assembled
+    // byte, the TPIU frame in progress and the current stream, and wait for the
+    // next TPIU sync pattern. Whole frames lost keep the nibble phase, since
+    // every raw byte makes one assembled byte, so the phase is unchanged.
+    void reset();
+
+    std::size_t frames() const { return frames_; } // TPIU frames decoded
+    std::size_t syncs() const { return syncs_; } // full TPIU sync patterns seen
+    bool synced() const { return synced_; }
+
+private:
+    void tpiu_byte(uint8_t d, std::vector<uint8_t>& out);
+
+    int parity_, order_, want_;
+    // nibble assembly
+    bool have_prev_ = false;
+    uint8_t prev_ = 0;
+    uint64_t nib_index_ = 0; // nibbles produced since the start (or reset)
+    bool has_pending_ = false;
+    uint8_t pending_ = 0;
+    // TPIU
+    bool synced_ = false;
+    uint32_t sync_monitor_ = 0;
+    uint8_t rxed_[16] = { 0 };
+    int byte_count_ = 0;
+    bool got_lowbits_ = false;
+    int cur_stream_ = 0;
+    std::size_t frames_ = 0, syncs_ = 0;
+};
+
 } // namespace cortrace
 
 #endif // CORTRACE_DEFRAME_HPP

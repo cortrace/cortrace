@@ -15,6 +15,7 @@
 
 #include "cortrace/codemap.hpp"
 #include "cortrace/element.hpp"
+#include "cortrace/elfmem.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -66,6 +67,16 @@ public:
     // consistency-safe alternative to a flat binary. Returns false on failure.
     virtual bool add_elf(const std::string& path) = 0;
 
+    // The same, from an ElfMemory that is already in RAM. Unlike add_elf this
+    // is safe with decoders on several threads: they all read the one
+    // immutable image (the decoder keeps a reference to it). A decoder that
+    // cannot do this returns false.
+    virtual bool add_elf_memory(const std::shared_ptr<const ElfMemory>& elf)
+    {
+        (void)elf;
+        return false;
+    }
+
     // Set the sink that receives normalised elements.
     virtual void set_sink(ElementSink sink) = 0;
 
@@ -79,7 +90,17 @@ public:
 
 #if defined(CORTRACE_HAVE_OPENCSD)
 // Construct an OpenCSD-backed ETMv4 decoder. Returns nullptr on setup failure.
+// Creating and destroying decoders is serialised inside, so it may be done
+// from several threads; decoding (process) needs nothing shared except the
+// error logger, see opencsd_silence_errors().
 std::unique_ptr<IDecoder> make_opencsd_decoder(const EtmV4Config& cfg);
+
+// OpenCSD has one error logger for the whole process and it updates it without
+// a lock whenever a decoder reports a problem, which damaged trace does all
+// the time. Call this once, before decoders run on several threads: errors are
+// then still returned to the caller as element kinds, just not logged by
+// OpenCSD.
+void opencsd_silence_errors();
 
 // OpenCSD's own Thumb instruction decoder (the one its ETMv4 decoder follows
 // the program with), set up for a Cortex-M ETMv4 like make_opencsd_decoder.

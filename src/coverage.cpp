@@ -59,11 +59,18 @@ void CoverageSink::advance_to(uint64_t byte_index)
 void CoverageSink::close_open(uint64_t end)
 {
     open_.end = end;
-    ++health_.segments;
+    if (open_.start < commit_limit_)
+        ++health_.segments;
     closed_.push_back(std::move(open_));
     open_ = Segment {};
     open_.id = next_id_++;
     open_.start = end;
+    if (!frozen_ && open_.start >= commit_limit_) {
+        // From here on the stream belongs to the next chunk, which counts what
+        // happens in it. (The events can still drop the segments waiting.)
+        frozen_ = true;
+        frozen_health_ = health_;
+    }
     while (closed_.size() > static_cast<std::size_t>(lag_)) {
         commit(closed_.front());
         closed_.pop_front();
@@ -74,6 +81,8 @@ void CoverageSink::close_open(uint64_t end)
 
 void CoverageSink::commit(Segment& s)
 {
+    if (s.start >= commit_limit_)
+        return; // overlap: the next chunk owns this segment
     if (s.dirty) {
         ++health_.quarantined;
         health_.quarantined_bytes += s.end > s.start ? s.end - s.start : 0;
@@ -110,6 +119,22 @@ void CoverageSink::commit(Segment& s)
 }
 
 void CoverageSink::dirty_current() { open_.dirty = true; }
+
+void CoverageSink::mark_discontinuity() { lose(); }
+
+CoverageHealth CoverageSink::health() const
+{
+    if (!frozen_)
+        return health_;
+    // Events as they were when the overlap began; commits as they ended up.
+    CoverageHealth h = frozen_health_;
+    h.segments = health_.segments;
+    h.committed = health_.committed;
+    h.quarantined = health_.quarantined;
+    h.quarantined_bytes = health_.quarantined_bytes;
+    h.ranges_committed = health_.ranges_committed;
+    return h;
+}
 
 void CoverageSink::taint()
 {
@@ -382,79 +407,161 @@ namespace {
         }
         std::fputc('"', f);
     }
+
+    template <class V> unsigned long long at(const V& v, std::size_t i)
+    {
+        return static_cast<unsigned long long>(v[i]);
+    }
+
+    // The objcov file. Written next to its final name and renamed, so that a
+    // reader (or a crash in the middle of an hours-long capture) never sees a
+    // half-written file.
+    template <class Counts, class Segs>
+    bool write_objcov(const std::string& path, const std::string& elf_path, const CodeMap& map,
+        int lag, const CoverageHealth& h, const Counts& hits, const Counts& taken,
+        const Counts& not_taken, const Segs& segs, const Segs& taken_segs,
+        const Segs& not_taken_segs, const std::map<uint32_t, std::set<uint32_t>>& indirect)
+    {
+        const std::string tmp = path + ".tmp";
+        FILE* f = std::fopen(tmp.c_str(), "w");
+        if (!f)
+            return false;
+        std::fprintf(f, "{\"format\": \"cortrace-objcov\", \"version\": 1, \"elf\": ");
+        put_json_string(f, elf_path);
+        std::fprintf(f, ", \"commit_lag\": %d,\n\"health\": {", lag);
+        bool first = true;
+        for (const auto& fld : CoverageHealth::fields()) {
+            std::fprintf(f, "%s\"%s\": %llu", first ? "" : ", ", fld.name,
+                static_cast<unsigned long long>(h.*(fld.ptr)));
+            first = false;
+        }
+        // insns: [addr, size, flags, hits, segments]; flags = kind | cond << 3 | waypoint << 4
+        std::fprintf(f, "},\n\"insns\": [");
+        const auto& v = map.insns();
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            const unsigned flags = static_cast<unsigned>(v[i].kind) | (v[i].cond ? 8u : 0u)
+                | (v[i].waypoint ? 16u : 0u);
+            std::fprintf(f, "%s[%u, %u, %u, %llu, %llu]", i ? ",\n" : "\n", v[i].addr, v[i].size,
+                flags, at(hits, i), at(segs, i));
+        }
+        // branches: [addr, taken, not_taken, taken segments, not-taken segments]
+        // for every conditional waypoint
+        std::fprintf(f, "],\n\"branches\": [");
+        first = true;
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            if (!(v[i].waypoint && v[i].cond))
+                continue;
+            std::fprintf(f, "%s[%u, %llu, %llu, %llu, %llu]", first ? "\n" : ",\n", v[i].addr,
+                at(taken, i), at(not_taken, i), at(taken_segs, i), at(not_taken_segs, i));
+            first = false;
+        }
+        std::fprintf(f, "],\n\"indirect\": [");
+        first = true;
+        for (const auto& kv : indirect) {
+            std::fprintf(f, "%s[%u, [", first ? "\n" : ",\n", kv.first);
+            bool ft = true;
+            for (uint32_t t : kv.second) {
+                std::fprintf(f, "%s%u", ft ? "" : ", ", t);
+                ft = false;
+            }
+            std::fprintf(f, "]]");
+            first = false;
+        }
+        std::fprintf(f, "]}\n");
+        const bool ok = std::fflush(f) == 0 && !std::ferror(f);
+        const bool closed = std::fclose(f) == 0;
+        if (!ok || !closed || std::rename(tmp.c_str(), path.c_str()) != 0) {
+            std::remove(tmp.c_str());
+            return false;
+        }
+        return true;
+    }
 } // namespace
 
 bool CoverageSink::write_json(const std::string& path, const std::string& elf_path) const
 {
-    FILE* f = std::fopen(path.c_str(), "w");
-    if (!f)
-        return false;
-    const CoverageHealth& h = health_;
-    std::fprintf(f, "{\"format\": \"cortrace-objcov\", \"version\": 1, \"elf\": ");
-    put_json_string(f, elf_path);
-    std::fprintf(f, ", \"commit_lag\": %d,\n\"health\": {", lag_);
-    const std::pair<const char*, uint64_t> fields[] = {
-        { "segments", h.segments },
-        { "committed", h.committed },
-        { "quarantined", h.quarantined },
-        { "quarantined_bytes", h.quarantined_bytes },
-        { "ranges", h.ranges },
-        { "ranges_committed", h.ranges_committed },
-        { "lost_sync", h.lost_sync },
-        { "addr_nacc", h.addr_nacc },
-        { "trace_on", h.trace_on },
-        { "overflow", h.overflow },
-        { "outside_code", h.outside_code },
-        { "count_mismatch", h.count_mismatch },
-        { "kind_mismatch", h.kind_mismatch },
-        { "cond_mismatch", h.cond_mismatch },
-        { "flow_mismatch", h.flow_mismatch },
-        { "flow_checked", h.flow_checked },
-        { "return_mismatch", h.return_mismatch },
-        { "return_checked", h.return_checked },
-        { "exception_return_elsewhere", h.exception_return_elsewhere },
-        { "cond_outcomes", h.cond_outcomes },
+    return write_objcov(path, elf_path, map_, lag_, health(), hits_, taken_, not_taken_, segs_,
+        taken_segs_, not_taken_segs_, indirect_);
+}
+
+const std::vector<CoverageHealth::Field>& CoverageHealth::fields()
+{
+    static const std::vector<Field> f = {
+        { "segments", &CoverageHealth::segments },
+        { "committed", &CoverageHealth::committed },
+        { "quarantined", &CoverageHealth::quarantined },
+        { "quarantined_bytes", &CoverageHealth::quarantined_bytes },
+        { "ranges", &CoverageHealth::ranges },
+        { "ranges_committed", &CoverageHealth::ranges_committed },
+        { "lost_sync", &CoverageHealth::lost_sync },
+        { "addr_nacc", &CoverageHealth::addr_nacc },
+        { "trace_on", &CoverageHealth::trace_on },
+        { "overflow", &CoverageHealth::overflow },
+        { "outside_code", &CoverageHealth::outside_code },
+        { "count_mismatch", &CoverageHealth::count_mismatch },
+        { "kind_mismatch", &CoverageHealth::kind_mismatch },
+        { "cond_mismatch", &CoverageHealth::cond_mismatch },
+        { "flow_mismatch", &CoverageHealth::flow_mismatch },
+        { "flow_checked", &CoverageHealth::flow_checked },
+        { "return_mismatch", &CoverageHealth::return_mismatch },
+        { "return_checked", &CoverageHealth::return_checked },
+        { "exception_return_elsewhere", &CoverageHealth::exception_return_elsewhere },
+        { "cond_outcomes", &CoverageHealth::cond_outcomes },
+        { "udp_gaps", &CoverageHealth::udp_gaps },
+        { "udp_lost_frames", &CoverageHealth::udp_lost_frames },
+        { "dropped_chunks", &CoverageHealth::dropped_chunks },
+        { "dropped_bytes", &CoverageHealth::dropped_bytes },
+        { "decode_fatal", &CoverageHealth::decode_fatal },
     };
-    bool first = true;
-    for (const auto& kv : fields) {
-        std::fprintf(f, "%s\"%s\": %llu", first ? "" : ", ", kv.first,
-            static_cast<unsigned long long>(kv.second));
-        first = false;
+    return f;
+}
+
+void CoverageHealth::add(const CoverageHealth& o)
+{
+    for (const auto& fld : fields())
+        this->*(fld.ptr) += o.*(fld.ptr);
+}
+
+CoverageAccumulator::CoverageAccumulator(const CodeMap& map, int commit_lag)
+    : map_(map)
+    , lag_(commit_lag < 0 ? 0 : commit_lag)
+    , hits_(map.size(), 0)
+    , taken_(map.size(), 0)
+    , not_taken_(map.size(), 0)
+    , segs_(map.size(), 0)
+    , taken_segs_(map.size(), 0)
+    , not_taken_segs_(map.size(), 0)
+{
+}
+
+void CoverageAccumulator::merge(const CoverageSink& s)
+{
+    const std::size_t n = map_.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        hits_[i] += s.hits()[i];
+        taken_[i] += s.taken()[i];
+        not_taken_[i] += s.not_taken()[i];
+        segs_[i] += s.segments_seen()[i];
+        taken_segs_[i] += s.taken_segments()[i];
+        not_taken_segs_[i] += s.not_taken_segments()[i];
     }
-    // insns: [addr, size, flags, hits, segments]; flags = kind | cond << 3 | waypoint << 4
-    std::fprintf(f, "},\n\"insns\": [");
-    const auto& v = map_.insns();
-    for (std::size_t i = 0; i < v.size(); ++i) {
-        const unsigned flags
-            = static_cast<unsigned>(v[i].kind) | (v[i].cond ? 8u : 0u) | (v[i].waypoint ? 16u : 0u);
-        std::fprintf(f, "%s[%u, %u, %u, %u, %u]", i ? ",\n" : "\n", v[i].addr, v[i].size, flags,
-            hits_[i], segs_[i]);
-    }
-    // branches: [addr, taken, not_taken, taken segments, not-taken segments]
-    // for every conditional waypoint
-    std::fprintf(f, "],\n\"branches\": [");
-    first = true;
-    for (std::size_t i = 0; i < v.size(); ++i) {
-        if (!(v[i].waypoint && v[i].cond))
-            continue;
-        std::fprintf(f, "%s[%u, %u, %u, %u, %u]", first ? "\n" : ",\n", v[i].addr, taken_[i],
-            not_taken_[i], taken_segs_[i], not_taken_segs_[i]);
-        first = false;
-    }
-    std::fprintf(f, "],\n\"indirect\": [");
-    first = true;
-    for (const auto& kv : indirect_) {
-        std::fprintf(f, "%s[%u, [", first ? "\n" : ",\n", kv.first);
-        bool ft = true;
-        for (uint32_t t : kv.second) {
-            std::fprintf(f, "%s%u", ft ? "" : ", ", t);
-            ft = false;
-        }
-        std::fprintf(f, "]]");
-        first = false;
-    }
-    std::fprintf(f, "]}\n");
-    return std::fclose(f) == 0;
+    for (const auto& kv : s.indirect_targets())
+        indirect_[kv.first].insert(kv.second.begin(), kv.second.end());
+    health_.add(s.health());
+}
+
+uint64_t CoverageAccumulator::instructions_hit() const
+{
+    uint64_t n = 0;
+    for (uint64_t h : hits_)
+        n += h != 0;
+    return n;
+}
+
+bool CoverageAccumulator::write_json(const std::string& path, const std::string& elf_path) const
+{
+    return write_objcov(path, elf_path, map_, lag_, health_, hits_, taken_, not_taken_, segs_,
+        taken_segs_, not_taken_segs_, indirect_);
 }
 
 } // namespace cortrace

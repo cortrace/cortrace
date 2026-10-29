@@ -17,7 +17,9 @@ function(enable_coverage_if_requested)
             message(FATAL_ERROR "Coverage requires GCC or Clang")
         endif()
         message(STATUS "Coverage instrumentation: ENABLED")
-        add_compile_options(--coverage -O0 -g -fprofile-arcs -ftest-coverage)
+        # atomic: the engine tests run decoders on several threads, and plain
+        # counter updates race (gcov then reports negative hits, GCC bug 68080).
+        add_compile_options(--coverage -O0 -g -fprofile-arcs -ftest-coverage -fprofile-update=atomic)
         add_link_options(--coverage)
     endif()
 endfunction()

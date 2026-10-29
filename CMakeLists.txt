@@ -67,6 +67,9 @@ list(REMOVE_ITEM CORTRACE_CORE_SRC ${CMAKE_SOURCE_DIR}/src/opencsd_decoder.cpp)
 add_library(cortrace_core ${CORTRACE_CORE_SRC})
 target_include_directories(cortrace_core PUBLIC ${CMAKE_SOURCE_DIR}/include)
 cortrace_set_warnings(cortrace_core)
+# Decoders run on worker threads (cortrace-cov).
+find_package(Threads REQUIRED)
+target_link_libraries(cortrace_core PUBLIC Threads::Threads)
 
 # The OpenCSD adapter (added below) is the one file of ours that includes the
 # third-party OpenCSD headers, whose anonymous structs / ignored qualifiers trip

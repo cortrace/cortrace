@@ -2,14 +2,18 @@
 //
 // SPDX-License-Identifier: MIT
 #include "cortrace/codemap.hpp"
+#include "cortrace/elfmem.hpp"
+#include "elf_fixture.hpp"
 #include "test_framework.hpp"
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 using namespace cortrace;
+using elf_fixture::elf_with_segments;
 
 namespace {
 
@@ -361,4 +365,83 @@ TEST(codemap_from_elf_errors)
     CHECK(!CodeMap::from_elf(p, dec, m, err));
     CHECK(err.find("no Thumb code") != std::string::npos);
     std::remove(p.c_str());
+}
+
+// ---- ElfMemory -------------------------------------------------------------
+
+TEST(elfmem_regions_follow_the_load_segments)
+{
+    std::string err;
+    // flash at 0x08000000 (16 B), .data's load image at 0x08000010 (8 B),
+    // .bss-only segment (no file bytes) is left out
+    auto mem = ElfMemory::from_bytes(elf_with_segments({ { 0x08000000, 16, 16 },
+                                         { 0x08000010, 8, 64 }, { 0x24000000, 0, 128 } }),
+        err);
+    CHECK(mem != nullptr);
+    CHECK_EQ(mem->regions().size(), std::size_t(2));
+    CHECK_EQ(mem->regions()[0].addr, 0x08000000u);
+    CHECK_EQ(mem->regions()[0].size, std::size_t(16));
+    CHECK_EQ(mem->regions()[1].addr, 0x08000010u);
+    CHECK_EQ(mem->regions()[1].size, std::size_t(8));
+    CHECK_EQ(mem->data()[mem->regions()[0].offset], 1);
+    CHECK_EQ(mem->data()[mem->regions()[1].offset], 2);
+    CHECK_EQ(mem->data()[mem->regions()[1].offset + 7], 2);
+}
+
+TEST(elfmem_rejects_what_it_cannot_read)
+{
+    std::string err;
+    CHECK(ElfMemory::from_bytes({}, err) == nullptr);
+    CHECK(err.find("not an ELF") != std::string::npos);
+
+    auto elf64 = elf_with_segments({ { 0x08000000, 4, 4 } });
+    elf64[4] = 2; // ELFCLASS64
+    CHECK(ElfMemory::from_bytes(elf64, err) == nullptr);
+    CHECK(err.find("32-bit little-endian") != std::string::npos);
+
+    auto none = elf_with_segments({ { 0x24000000, 0, 64 } });
+    CHECK(ElfMemory::from_bytes(none, err) == nullptr);
+    CHECK(err.find("no loadable") != std::string::npos);
+
+    auto cut = elf_with_segments({ { 0x08000000, 16, 16 } }, true);
+    CHECK(ElfMemory::from_bytes(cut, err) == nullptr);
+    CHECK(err.find("past the end") != std::string::npos);
+
+    auto noph = elf_with_segments({ { 0x08000000, 4, 4 } });
+    noph[28] = noph[29] = 0; // e_phoff = 0
+    CHECK(ElfMemory::from_bytes(noph, err) == nullptr);
+    CHECK(err.find("no program headers") != std::string::npos);
+
+    auto shorttab = elf_with_segments({ { 0x08000000, 4, 4 } });
+    shorttab[44] = 9; // e_phnum: the table would run off the file
+    CHECK(ElfMemory::from_bytes(shorttab, err) == nullptr);
+    CHECK(err.find("program header table") != std::string::npos);
+}
+
+TEST(elfmem_load_reads_a_file)
+{
+    const std::string p = cortrace_test::temp_path("mem.elf");
+    const auto bytes = elf_with_segments({ { 0x08000000, 8, 8 } });
+    {
+        std::FILE* f = std::fopen(p.c_str(), "wb");
+        std::fwrite(bytes.data(), 1, bytes.size(), f);
+        std::fclose(f);
+    }
+    std::string err;
+    auto mem = ElfMemory::load(p, err);
+    CHECK(mem != nullptr);
+    CHECK_EQ(mem->size(), bytes.size());
+    std::remove(p.c_str());
+
+    CHECK(ElfMemory::load("/nonexistent-dir/x.elf", err) == nullptr);
+    CHECK(err.find("cannot open") != std::string::npos);
+    const std::string bad = cortrace_test::temp_path("bad.elf");
+    {
+        std::FILE* f = std::fopen(bad.c_str(), "wb");
+        std::fputs("plain text", f);
+        std::fclose(f);
+    }
+    CHECK(ElfMemory::load(bad, err) == nullptr);
+    CHECK(err.find(bad) != std::string::npos); // the message names the file
+    std::remove(bad.c_str());
 }

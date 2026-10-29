@@ -400,3 +400,120 @@ TEST(coverage_write_json)
     std::remove(p.c_str());
     CHECK(!s.write_json("/nonexistent-dir/x.json", "fw.elf"));
 }
+
+TEST(coverage_commit_limit_leaves_the_overlap_to_the_next_chunk)
+{
+    const CodeMap m = test_map();
+    // The chunk is [0, 300); segments 3 and 4 are the overlap that follows it.
+    auto feed = [&](CoverageSink& s) {
+        segments(s, 4);
+        s.on_element(range(0x108, 0x10c, BranchKind::Direct, true, 50)); // segment 0
+        s.on_element(range(0x100, 0x104, BranchKind::Direct, true, 150, true)); // segment 1
+        s.on_element(range(0x110, 0x112, BranchKind::None, false, 250)); // segment 2
+        s.on_element(Element::simple(ElementKind::NoSync, 350)); // segment 3: a loss
+        s.on_element(range(0x120, 0x122, BranchKind::None, false, 450)); // segment 4
+        s.finish(500);
+    };
+    CoverageSink whole(m, 1);
+    feed(whole);
+    CHECK_EQ(whole.health().lost_sync, uint64_t(1));
+    CHECK_EQ(whole.health().segments, uint64_t(5));
+
+    CoverageSink chunk(m, 1);
+    chunk.set_commit_limit(300);
+    feed(chunk);
+    const CoverageHealth h = chunk.health();
+    // The loss in the overlap still drops the segment before it ...
+    CHECK_EQ(hits_at(chunk, 0x108), 1u);
+    CHECK_EQ(hits_at(chunk, 0x100), 1u);
+    CHECK_EQ(hits_at(chunk, 0x110), 0u);
+    CHECK_EQ(h.committed, uint64_t(2));
+    CHECK_EQ(h.quarantined, uint64_t(1));
+    CHECK_EQ(h.quarantined_bytes, uint64_t(100));
+    // ... but neither it nor the overlap's segments are this chunk's to count.
+    CHECK_EQ(h.lost_sync, uint64_t(0));
+    CHECK_EQ(h.segments, uint64_t(3));
+    CHECK_EQ(hits_at(chunk, 0x120), 0u);
+}
+
+TEST(coverage_discontinuity_drops_everything_decoded_so_far)
+{
+    const CodeMap m = test_map();
+    CoverageSink s(m, 2);
+    segments(s, 1);
+    s.on_element(range(0x108, 0x10c, BranchKind::Direct, true, 50));
+    s.on_element(range(0x100, 0x104, BranchKind::Direct, false, 150, true));
+    s.mark_discontinuity();
+    s.finish(200);
+    CHECK_EQ(hits_at(s, 0x108), 0u);
+    CHECK_EQ(hits_at(s, 0x100), 0u);
+    CHECK_EQ(s.health().committed, uint64_t(0));
+    CHECK_EQ(s.health().quarantined, uint64_t(2));
+}
+
+TEST(coverage_accumulator_adds_sinks_and_pipeline_events)
+{
+    const CodeMap m = test_map();
+    CoverageAccumulator acc(m, 0);
+    for (int i = 0; i < 3; ++i) {
+        CoverageSink s(m, 0);
+        s.on_element(range(0x100, 0x104, BranchKind::Direct, i != 1, 1, true));
+        s.on_element(range(i != 1 ? 0x110 : 0x104, i != 1 ? 0x112 : 0x108,
+            i != 1 ? BranchKind::None : BranchKind::DirectCall, false, 2));
+        s.on_element(Element::simple(ElementKind::Benign, 3));
+        s.finish(10);
+        acc.merge(s);
+    }
+    CHECK_EQ(acc.hits()[static_cast<std::size_t>(m.index_at(0x100))], uint64_t(3));
+    CHECK_EQ(acc.hits()[static_cast<std::size_t>(m.index_at(0x110))], uint64_t(2));
+    CHECK_EQ(acc.hits()[static_cast<std::size_t>(m.index_at(0x106))], uint64_t(1));
+    CHECK_EQ(acc.instructions_hit(), uint64_t(5));
+    CHECK_EQ(acc.health().committed, uint64_t(3));
+    CHECK_EQ(acc.health().cond_outcomes, uint64_t(3));
+    CoverageHealth ev;
+    ev.udp_gaps = 2;
+    ev.udp_lost_frames = 7;
+    ev.dropped_chunks = 1;
+    acc.add_health(ev);
+    CHECK_EQ(acc.health().losses(), uint64_t(3));
+    CHECK_EQ(acc.health().udp_lost_frames, uint64_t(7));
+
+    const std::string p = cortrace_test::temp_path("acc.json");
+    CHECK(acc.write_json(p, "fw.elf"));
+    std::ifstream f(p);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string j = ss.str();
+    CHECK(j.find("\"udp_gaps\": 2") != std::string::npos);
+    CHECK(j.find("\"dropped_chunks\": 1") != std::string::npos);
+    CHECK(j.find("[256, 2, 0, 3, 3]") != std::string::npos); // 0x100: 3 hits in 3 segments
+    CHECK(j.find("[258, 2, 1, 2, 1]") != std::string::npos); // BEQ: taken 2x, not taken 1x
+    std::ifstream tmp(p + ".tmp"); // renamed, not left behind
+    CHECK(!tmp.good());
+    std::remove(p.c_str());
+    CHECK(!acc.write_json("/nonexistent-dir/x.json", "fw.elf"));
+}
+
+TEST(coverage_accumulator_file_is_the_sink_file)
+{
+    const CodeMap m = test_map();
+    CoverageSink s(m, 0);
+    s.on_element(range(0x100, 0x104, BranchKind::Direct, true, 1, true));
+    s.on_element(range(0x110, 0x114, BranchKind::Return, true, 2));
+    s.on_element(range(0x108, 0x10c, BranchKind::Direct, true, 3));
+    s.finish(10);
+    CoverageAccumulator acc(m, 0);
+    acc.merge(s);
+    const std::string a = cortrace_test::temp_path("same_a.json");
+    const std::string b = cortrace_test::temp_path("same_b.json");
+    CHECK(s.write_json(a, "fw.elf"));
+    CHECK(acc.write_json(b, "fw.elf"));
+    std::ifstream fa(a), fb(b);
+    std::stringstream sa, sb;
+    sa << fa.rdbuf();
+    sb << fb.rdbuf();
+    CHECK(!sa.str().empty());
+    CHECK(sa.str() == sb.str());
+    std::remove(a.c_str());
+    std::remove(b.c_str());
+}

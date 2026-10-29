@@ -178,6 +178,87 @@ namespace {
     }
 } // namespace
 
+StreamDeframer::StreamDeframer(const DeframePhase& phase, int want_stream)
+    : parity_(phase.parity)
+    , order_(phase.order)
+    , want_(want_stream)
+{
+}
+
+void StreamDeframer::reset()
+{
+    have_prev_ = false;
+    prev_ = 0;
+    nib_index_ = 0;
+    has_pending_ = false;
+    synced_ = false;
+    sync_monitor_ = 0;
+    byte_count_ = 0;
+    got_lowbits_ = false;
+    cur_stream_ = 0;
+}
+
+// One byte of tpiu_deframe()'s loop.
+void StreamDeframer::tpiu_byte(uint8_t d, std::vector<uint8_t>& out)
+{
+    sync_monitor_ = (sync_monitor_ << 8) | d;
+    if (sync_monitor_ == SYNCPATTERN) {
+        synced_ = true;
+        byte_count_ = 0;
+        got_lowbits_ = false;
+        ++syncs_;
+        return;
+    }
+    if (!synced_)
+        return;
+    if (!got_lowbits_) {
+        got_lowbits_ = true;
+        rxed_[byte_count_] = d;
+        return;
+    }
+    got_lowbits_ = false;
+    if (d == HALFSYNC_HIGH && rxed_[byte_count_] == HALFSYNC_LOW)
+        return; // halfsync filler, ignore
+    ++byte_count_;
+    rxed_[byte_count_] = d;
+    ++byte_count_;
+    if (byte_count_ == TPIU_PACKET_LEN) {
+        ++frames_;
+        byte_count_ = 0;
+        cur_stream_ = get_packet(rxed_, want_, cur_stream_, out);
+    }
+}
+
+void StreamDeframer::feed(const uint8_t* raw, std::size_t len, std::vector<uint8_t>& out)
+{
+    // assemble_nibbles(): every raw byte after the first gives the nibbles
+    // hi(previous) and lo(this); the first `parity` nibbles are dropped and the
+    // rest are paired, in the order the phase says.
+    const uint64_t drop = static_cast<uint64_t>(parity_ < 0 ? 0 : parity_);
+    for (std::size_t i = 0; i < len; ++i) {
+        const uint8_t r = raw[i];
+        if (have_prev_) {
+            const uint8_t nibs[2]
+                = { static_cast<uint8_t>((prev_ >> 4) & 0xF), static_cast<uint8_t>(r & 0xF) };
+            for (const uint8_t n : nibs) {
+                if (nib_index_++ < drop)
+                    continue;
+                if (!has_pending_) {
+                    pending_ = n;
+                    has_pending_ = true;
+                } else {
+                    has_pending_ = false;
+                    tpiu_byte(order_ == 0 ? static_cast<uint8_t>((n << 4) | pending_)
+                                          : static_cast<uint8_t>((pending_ << 4) | n),
+                        out);
+                }
+            }
+        }
+        prev_ = r;
+        have_prev_ = true;
+    }
+}
+
 DeframeResult tpiu_deframe(
     const std::vector<uint8_t>& data, int want_stream, const DeframePhase& phase)
 {

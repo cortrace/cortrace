@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #include "cortrace/log.hpp"
@@ -109,10 +110,20 @@ namespace {
         }
     }
 
+    // OpenCSD keeps process-wide tables of the decode trees (and, for file
+    // memory images, of the open files). Building or tearing down a tree on
+    // two threads at once corrupts them; decoding does not touch them.
+    std::mutex& tree_mutex()
+    {
+        static std::mutex m;
+        return m;
+    }
+
     class OpenCsdDecoder final : public IDecoder {
     public:
         explicit OpenCsdDecoder(const EtmV4Config& cfg)
         {
+            std::lock_guard<std::mutex> lock(tree_mutex());
             tree_ = ocsd_create_dcd_tree(OCSD_TRC_SRC_SINGLE, OCSD_DFRMTR_FRAME_MEM_ALIGN);
             if (tree_ == C_API_INVALID_TREE_HANDLE)
                 return;
@@ -137,18 +148,22 @@ namespace {
             if (ocsd_dt_create_decoder(
                     tree_, OCSD_BUILTIN_DCD_ETMV4I, OCSD_CREATE_FLG_FULL_DECODER, &ocfg, &csid)
                 != OCSD_OK) {
-                teardown();
+                teardown_locked();
                 return;
             }
             if (ocsd_dt_set_gen_elem_outfn(tree_, &OpenCsdDecoder::elem_trampoline, this)
                 != OCSD_OK) {
-                teardown();
+                teardown_locked();
                 return;
             }
             ok_ = true;
         }
 
-        ~OpenCsdDecoder() override { teardown(); }
+        ~OpenCsdDecoder() override
+        {
+            std::lock_guard<std::mutex> lock(tree_mutex());
+            teardown_locked();
+        }
 
         bool valid() const { return ok_; }
 
@@ -156,8 +171,29 @@ namespace {
         {
             if (!ok_)
                 return false;
+            std::lock_guard<std::mutex> lock(tree_mutex());
             return ocsd_dt_add_binfile_mem_acc(tree_, base, OCSD_MEM_SPACE_ANY, path.c_str())
                 == OCSD_OK;
+        }
+
+        bool add_elf_memory(const std::shared_ptr<const ElfMemory>& elf) override
+        {
+            if (!ok_ || !elf)
+                return false;
+            std::lock_guard<std::mutex> lock(tree_mutex());
+            for (const auto& r : elf->regions()) {
+                // The accessor reads the bytes where they are: no copy, and no
+                // state shared with the other decoders.
+                if (ocsd_dt_add_buffer_mem_acc(tree_, r.addr, OCSD_MEM_SPACE_ANY,
+                        elf->data() + r.offset, static_cast<uint32_t>(r.size))
+                    != OCSD_OK) {
+                    CT_LOG_ERROR(
+                        "add_elf_memory: region at 0x%08x (%zu bytes) refused", r.addr, r.size);
+                    return false;
+                }
+            }
+            elf_ = elf; // keep the bytes alive as long as the tree can read them
+            return true;
         }
 
         bool add_elf(const std::string& path) override
@@ -176,6 +212,7 @@ namespace {
             for (const auto& r : regions)
                 CT_LOG_DEBUG("add_elf region: off=0x%zx addr=0x%llx size=0x%zx", r.file_offset,
                     static_cast<unsigned long long>(r.start_address), r.region_size);
+            std::lock_guard<std::mutex> lock(tree_mutex());
             return ocsd_dt_add_binfile_region_mem_acc(tree_, regions.data(),
                        static_cast<int>(regions.size()), OCSD_MEM_SPACE_ANY, path.c_str())
                 == OCSD_OK;
@@ -213,7 +250,7 @@ namespace {
         }
 
     private:
-        void teardown()
+        void teardown_locked()
         {
             if (tree_ != C_API_INVALID_TREE_HANDLE) {
                 ocsd_destroy_dcd_tree(tree_);
@@ -306,12 +343,15 @@ namespace {
         }
 
         dcd_tree_handle_t tree_ = C_API_INVALID_TREE_HANDLE;
+        std::shared_ptr<const ElfMemory> elf_;
         ElementSink sink_;
         std::size_t index_ = 0;
         bool ok_ = false;
     };
 
 } // namespace
+
+void opencsd_silence_errors() { ocsd_def_errlog_init(OCSD_ERR_SEV_NONE, 0); }
 
 std::unique_ptr<IDecoder> make_opencsd_decoder(const EtmV4Config& cfg)
 {
