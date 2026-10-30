@@ -116,7 +116,7 @@ def with_events(p, sleep_wraps=0):
         "wraps": {"cpi": 100, "exc": 40, "sleep": sleep_wraps, "lsu": 30, "fold": 20},
     }
     shares = {
-        "hot": {"cpi": 0, "exc": 30, "sleep": 0, "lsu": 10, "fold": 2},
+        "hot": {"cpi": 0, "exc": 30, "sleep": 0, "lsu": 1, "fold": 0},
         "cold": {"cpi": 0, "exc": 10, "sleep": 0, "lsu": 0, "fold": 0},
         "idle": {"cpi": 0, "exc": 0, "sleep": 0, "lsu": 0, "fold": 0},
     }
@@ -203,6 +203,7 @@ def test_diff_compares_cpi_exceptions_and_lateness():
     a["exceptions"].append({**a["exceptions"][0], "number": 12, "name": "IRQ:gone"})
     out = prof.diff(a, b, top=5)
     assert "CPI          : 1.500 -> 5.000  (3.33x)" in out
+    assert "cycles       : 450,000,000 -> 450,000,000  (1.00x)" in out
     assert "hot" in out and "8.00" in out and "2.67x" in out
     assert "cold" in out
     assert "IRQ:SysTick" in out and "578" in out and "2.00x" in out
@@ -423,10 +424,12 @@ def test_text_report_with_event_counters():
         in out
     )
     assert "CPU load          : never asleep" in out
-    assert "LSU%" in out and "MC%" in out and "fold%" in out
+    assert "issue%" in out and "other%" in out and "LSU%" in out
+    assert "instructions - fold + cpi + lsu + exc = " in out
+    assert "against the cycle clock)" in out
     hot = next(line for line in out.splitlines() if line.startswith("  hot "))
-    # 10*256 of 300 cycles; 2*256 folded per 100 instructions
-    assert hot.split()[-3:] == ["853.3", "0.0", "512.0"]
+    # 100 of 300 cycles are issue slots, no other stall, 256 of 300 are loads and stores
+    assert hot.split()[-3:] == ["33.3", "0.0", "85.3"]
     assert "Exception overhead (DWT EXCCNT): 10,240 cycles" in out
     assert "75.0%" in out and "25.0%" in out  # hot 30 of 40, cold 10 of 40
 
@@ -455,9 +458,9 @@ def test_diff_shows_the_lsu_share_of_both():
     b["functions"] = b["functions"][:1]
     b["functions"][0]["events"]["lsu"] = 100
     out = prof.diff(a, b, top=3)
-    assert "LSU% A" in out and "LSU% B" in out
+    assert "LSU% A" in out and "LSU% B" in out and "other% A" in out
     hot = next(line for line in out.splitlines() if line.startswith("  hot "))
-    assert hot.split()[-2:] == ["853.3", "8533.3"]
+    assert hot.split()[-2:] == ["85.3", "8533.3"]
     cold = next(line for line in out.splitlines() if line.startswith("  cold "))
     assert cold.split()[-2:] == ["0.0", "-"]  # not in B
     idle = next(line for line in out.splitlines() if line.startswith("  idle "))

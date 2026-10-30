@@ -121,6 +121,25 @@ def load_line(prof):
     )
 
 
+def counted_cycles(prof):
+    """The cycles the DWT counters add up to: one per instruction that was not
+    folded, plus the extra cycles of the CPI, LSU and EXC counters."""
+    ev = prof["events"]
+    wraps = ev["wraps"]
+    extra = (wraps["cpi"] + wraps["lsu"] + wraps["exc"] - wraps["fold"]) * ev["unit"]
+    return prof["clock"]["instructions"] + extra
+
+
+def identity_line(prof):
+    cycles = prof["clock"]["cycles"]
+    counted = counted_cycles(prof)
+    off = (counted - cycles) / cycles * 100 if cycles else 0.0
+    return (
+        f"instructions - fold + cpi + lsu + exc = {num(counted)} cycles "
+        f"({off:+.2f}% against the cycle clock)"
+    )
+
+
 def text_events(prof):
     ev = events_of(prof)
     if not ev:
@@ -129,6 +148,7 @@ def text_events(prof):
     kinds = ", ".join(f"{k} {num(wraps[k])}" for k in EVENT_KINDS)
     return [
         f"  DWT events        : {num(ev['packets'])} packets, wraps of {ev['unit']} ({kinds})",
+        f"  DWT counters      : {identity_line(prof)}",
         f"  CPU load          : {load_line(prof)}",
     ]
 
@@ -151,6 +171,20 @@ def text_header(prof):
     ] + text_events(prof)
 
 
+def split_cycles(fn):
+    """A function's cycles as shares: issue (one per instruction that was not
+    folded), other stalls (the CPI counter) and loads and stores (LSU)."""
+    cyc = fn["cycles"]
+    if not cyc:
+        return None
+    issue = fn["instructions"] - event_cycles(fn, "fold")
+    return (
+        issue / cyc * 100,
+        event_cycles(fn, "cpi") / cyc * 100,
+        event_cycles(fn, "lsu") / cyc * 100,
+    )
+
+
 def text_functions(prof, top):
     clk = prof["clock"]
     total = clk["cycles"] or 1
@@ -158,7 +192,7 @@ def text_functions(prof, top):
     rows = ["", f"Functions by self cycles (top {top})"]
     head = f"  {'function':<34}{'entries':>11}{'instr':>14}{'cycles':>14}{'%':>8}{'CPI':>7}"
     if with_events:
-        head += f"{'LSU%':>7}{'MC%':>7}{'fold%':>7}"
+        head += f"{'issue%':>8}{'other%':>8}{'LSU%':>7}"
     rows.append(head)
     for fn in prof["functions"][:top]:
         row = (
@@ -166,25 +200,21 @@ def text_functions(prof, top):
             f"{num(fn['cycles']):>14}{fn['cycles'] / total * 100:>7.2f}%{cpi(fn):>7.2f}"
         )
         if with_events:
-            cyc = fn["cycles"] or 1
-            fold = (
-                event_cycles(fn, "fold") / fn["instructions"] * 100
-                if fn["instructions"]
-                else 0
-            )
+            share = split_cycles(fn)
             row += (
-                f"{event_cycles(fn, 'lsu') / cyc * 100:>7.1f}"
-                f"{event_cycles(fn, 'cpi') / cyc * 100:>7.1f}{fold:>7.1f}"
+                f"{share[0]:>8.1f}{share[1]:>8.1f}{share[2]:>7.1f}"
+                if share
+                else f"{'-':>8}{'-':>8}{'-':>7}"
             )
         rows.append(row)
     if with_events:
         rows.append(
-            "  LSU%: extra cycles of loads and stores (DWT LSUCNT) of the function's cycles; "
-            "MC%: DWT CPICNT, multi-cycle instructions,"
+            "  cycles = issue (instructions - folded) + other (DWT CPICNT: multi-cycle "
+            "instructions, fetch and pipeline stalls) + LSU (loads and stores) + exception"
         )
         rows.append(
-            "  only to compare functions (it adds up to more than cycles - instructions); "
-            "fold%: folded instructions per instruction."
+            "  overhead; the shares of one function add up to about 100% (a short function "
+            "can be off: the event places are blurred)."
         )
     return rows
 
@@ -294,18 +324,24 @@ def diff_totals(pa, pb):
     cpi_b = cb["cycles"] / cb["instructions"] if cb["instructions"] else 0.0
     return [
         "Cortrace Cycle Profile Diff  (A -> B)",
+        f"  cycles       : {num(ca['cycles'])} -> {num(cb['cycles'])}  "
+        f"({ratio(ca['cycles'], cb['cycles'])})",
         f"  instructions : {num(ca['instructions'])} -> {num(cb['instructions'])}",
         f"  CPI          : {cpi_a:.3f} -> {cpi_b:.3f}  ({ratio(cpi_a, cpi_b)})",
         f"  trace health : A {health_line(pa)}; B {health_line(pb)}",
-        "  (the same time was captured, so a slower B runs fewer instructions: compare CPI)",
+        "  (the same time was captured: on a load that never stops, a slower B runs fewer",
+        "   instructions; on a periodic one it runs the same instructions in more cycles)",
     ]
 
 
-def lsu_pct(entry):
-    """LSU extra cycles as a share of the function's cycles, or None."""
-    if not entry or not entry["cycles"]:
-        return None
-    return event_cycles(entry, "lsu") / entry["cycles"] * 100
+def stall_pct(entry, index):
+    """One share of split_cycles (1: other stalls, 2: LSU), or None."""
+    share = split_cycles(entry) if entry else None
+    return share[index] if share else None
+
+
+def cell(value, width=9):
+    return f"{value:>{width}.1f}" if value is not None else f"{'-':>{width}}"
 
 
 def diff_functions(pa, pb, top):
@@ -314,7 +350,7 @@ def diff_functions(pa, pb, top):
     rows = ["", f"Functions by cycles in A (top {top}): CPI"]
     head = f"  {'function':<34}{'A':>8}{'B':>8}{'B/A':>9}"
     if with_events:
-        head += f"{'LSU% A':>9}{'LSU% B':>9}"
+        head += f"{'other% A':>10}{'other% B':>10}{'LSU% A':>9}{'LSU% B':>9}"
     rows.append(head)
     for fn in pa["functions"][:top]:
         other = by_b.get(fn["name"])
@@ -324,9 +360,8 @@ def diff_functions(pa, pb, top):
             f"{ratio(cpi(fn), cpi(other)) if other and other['instructions'] else '-':>9}"
         )
         if with_events:
-            la, lb = lsu_pct(fn), lsu_pct(other)
-            row += f"{la:>9.1f}" if la is not None else f"{'-':>9}"
-            row += f"{lb:>9.1f}" if lb is not None else f"{'-':>9}"
+            row += cell(stall_pct(fn, 1), 10) + cell(stall_pct(other, 1), 10)
+            row += cell(stall_pct(fn, 2)) + cell(stall_pct(other, 2))
         rows.append(row)
     return rows
 
