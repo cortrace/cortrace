@@ -19,6 +19,12 @@ DEMCR_TRCENA = 1 << 24
 MAX_COMPARATORS = 4
 DWT_COMP_STRIDE = 0x10
 DWT_FUNC_DATA_VALUE_WRITE = 0x0D  # data-value packet on write
+DWT_CTRL_CYCCNTENA = 0x40000001  # the cycle counter on (the 4 is NUMCOMP, read-only)
+# DWT_CTRL.xxxEVTENA: the counter of this event sends a packet each time it wraps
+DWT_EVENT_BITS = {"cpi": 17, "exc": 18, "sleep": 19, "lsu": 20, "fold": 21}
+# DWT_CTRL.SYNCTAP = 1: a synchronisation packet every 2**24 cycles, so that a
+# parser can find the packets again after trace was lost
+DWT_SYNCTAP = 1 << 10
 
 
 class ArmError(Exception):
@@ -153,16 +159,34 @@ def arm_itm(regs, base, trace_id):
     regs.write(base + 0xE80, (trace_id << 16) | 0xF)
 
 
-def arm_dwt(regs, base, watches):
-    """Cycle counter on; one comparator per watched variable, each emitting a
-    data-value packet on every write."""
+def check_dwt_events(events):
+    unknown = [e for e in events if e not in DWT_EVENT_BITS]
+    if unknown:
+        raise ArmError(
+            f"unknown DWT event {unknown[0]!r} ({', '.join(DWT_EVENT_BITS)})"
+        )
+
+
+def dwt_ctrl_value(events):
+    """DWT_CTRL with the cycle counter and the given event counters on."""
+    value = DWT_CTRL_CYCCNTENA
+    for name in events:
+        value |= 1 << DWT_EVENT_BITS[name]
+    if events:
+        value |= DWT_SYNCTAP
+    return value
+
+
+def arm_dwt(regs, base, watches, events=()):
+    """Cycle counter on, with the event counters in `events`; one comparator per
+    watched variable, each emitting a data-value packet on every write."""
     if len(watches) > MAX_COMPARATORS:
         raise ArmError(
             f"{len(watches)} variables to watch, the DWT has {MAX_COMPARATORS} "
             "comparators"
         )
     regs.write(base + 0x004, 0)  # CYCCNT
-    regs.write(base + 0x000, 0x40000001)  # CTRL: CYCCNTENA
+    regs.write(base + 0x000, dwt_ctrl_value(events))  # CTRL
     for i, watch in enumerate(watches):
         comp = base + 0x020 + DWT_COMP_STRIDE * i
         regs.write(comp + 0x8, 0)  # FUNCTION off while programming
@@ -175,13 +199,24 @@ def arm_dwt(regs, base, watches):
         regs.write(base + 0x020 + DWT_COMP_STRIDE * i + 0x8, 0)
 
 
-def arm(probe, platform, watches, *, width=4, etm=True, profile="timing", log=print):
+def arm(
+    probe,
+    platform,
+    watches,
+    *,
+    width=4,
+    etm=True,
+    profile="timing",
+    dwt_events=(),
+    log=print,
+):
     """Halt the core, arm everything, resume. Returns a few read-back values."""
     max_width = platform["trace"]["max_width"]
     if not 1 <= width <= max_width:
         raise ArmError(f"trace width {width} not supported (1..{max_width})")
     if profile not in ETM_PROFILES:  # before the halt: never leave the core stopped
         raise ArmError(f"unknown ETM profile {profile!r} ({', '.join(ETM_PROFILES)})")
+    check_dwt_events(dwt_events)
     regs = Regs(probe)
     blocks = platform["coresight"]
     trace = platform["trace"]
@@ -201,7 +236,9 @@ def arm(probe, platform, watches, *, width=4, etm=True, profile="timing", log=pr
     else:
         hold_etm_off(regs, blocks["etm"])
     arm_itm(regs, blocks["itm"], trace["itm_trace_id"])
-    arm_dwt(regs, blocks["dwt"], watches)
+    arm_dwt(regs, blocks["dwt"], watches, dwt_events)
+    if dwt_events:
+        log(f"DWT event counters on: {', '.join(dwt_events)}")
     state = {
         "dwt_comp0": regs.read(blocks["dwt"] + 0x020),
         "dwt_func0": regs.read(blocks["dwt"] + 0x028),

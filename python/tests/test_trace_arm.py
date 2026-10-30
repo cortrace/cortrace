@@ -214,3 +214,20 @@ def test_the_default_path_programs_the_funnel_before_the_etf(plat):
         for base in (0x5C013000, 0x5C014000)
     }
     assert first[0x5C013000] < first[0x5C014000]
+
+
+def test_dwt_event_counters_are_switched_on_and_a_stale_setting_cleared(plat):
+    probe = FakeProbe()
+    trace_arm.arm(probe, plat, [], dwt_events=("lsu", "cpi"), log=lambda _m: None)
+    # CYCCNTENA | CPIEVTENA | LSUEVTENA | SYNCTAP
+    assert order(probe, 0xE0001000) == [0x40000001 | 1 << 17 | 1 << 20 | 1 << 10]
+    probe = FakeProbe({0xE0001000: 0x40300001})  # events left on by an earlier session
+    trace_arm.arm(probe, plat, [], log=lambda _m: None)
+    assert order(probe, 0xE0001000) == [0x40000001]
+
+
+def test_unknown_dwt_event_is_refused_before_the_halt(plat):
+    probe = FakeProbe()
+    with pytest.raises(ArmError, match="unknown DWT event 'cache'"):
+        trace_arm.arm(probe, plat, [], dwt_events=("cache",), log=lambda _m: None)
+    assert not probe.writes and not probe.events

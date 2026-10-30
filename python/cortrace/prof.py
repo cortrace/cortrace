@@ -35,6 +35,8 @@ from ._paths import find_binary
 ERROR = 2
 FORMAT = "cortrace-prof"
 VERSION = 1
+EVENT_UNIT = 256  # events one wrap of a DWT counter stands for
+EVENT_KINDS = ("cpi", "exc", "sleep", "lsu", "fold")
 
 
 class ProfError(Exception):
@@ -88,10 +90,47 @@ def health_line(prof):
     )
 
 
-def drift_line(clock):
+def events_of(prof):
+    """The DWT event block, or None when the trace had no event packets."""
+    ev = prof.get("events")
+    return ev if ev and ev["packets"] else None
+
+
+def drift_line(prof):
+    clock = prof["clock"]
     if clock["drift_ppm"] is None:
         return "not checked (give --sysclk-hz and --tsgen-hz)"
-    return f"{clock['drift_ppm']:+.1f} ppm against the global timestamps"
+    ev = events_of(prof)
+    asleep = " (the cycles asleep added)" if ev and ev["sleep_cycles"] else ""
+    return f"{clock['drift_ppm']:+.1f} ppm against the global timestamps{asleep}"
+
+
+def event_cycles(entry, kind):
+    """Cycles of a DWT counter in a function: each wrap is 256 events."""
+    return entry["events"][kind] * EVENT_UNIT
+
+
+def load_line(prof):
+    ev = events_of(prof)
+    busy = prof["clock"]["cycles"]
+    if ev["sleep_cycles"] == 0:
+        return "never asleep (or the SLEEP counter is off)"
+    pct = busy / (busy + ev["sleep_cycles"]) * 100
+    return (
+        f"{pct:.1f}% (busy {num(busy)} cycles, asleep {num(ev['sleep_cycles'])} cycles)"
+    )
+
+
+def text_events(prof):
+    ev = events_of(prof)
+    if not ev:
+        return []
+    wraps = ev["wraps"]
+    kinds = ", ".join(f"{k} {num(wraps[k])}" for k in EVENT_KINDS)
+    return [
+        f"  DWT events        : {num(ev['packets'])} packets, wraps of {ev['unit']} ({kinds})",
+        f"  CPU load          : {load_line(prof)}",
+    ]
 
 
 def text_header(prof):
@@ -106,24 +145,66 @@ def text_header(prof):
         f"  elf               : {prof['elf']}",
         f"  cycles            : {num(clk['cycles'])}{secs}",
         f"  instructions      : {num(clk['instructions'])}  (CPI {cpi_all:.3f}, IPC {ipc:.3f})",
-        f"  cycle clock       : {drift_line(clk)}",
+        f"  cycle clock       : {drift_line(prof)}",
         f"  cycles with no instruction: {share:.3f}% (exception entry, trace gaps)",
         f"  trace health      : {health_line(prof)}",
-    ]
+    ] + text_events(prof)
 
 
 def text_functions(prof, top):
     clk = prof["clock"]
     total = clk["cycles"] or 1
+    with_events = events_of(prof) is not None
     rows = ["", f"Functions by self cycles (top {top})"]
-    rows.append(
-        f"  {'function':<34}{'entries':>11}{'instr':>14}{'cycles':>14}{'%':>8}{'CPI':>7}"
-    )
+    head = f"  {'function':<34}{'entries':>11}{'instr':>14}{'cycles':>14}{'%':>8}{'CPI':>7}"
+    if with_events:
+        head += f"{'LSU%':>7}{'MC%':>7}{'fold%':>7}"
+    rows.append(head)
     for fn in prof["functions"][:top]:
-        rows.append(
+        row = (
             f"  {fn['name'][:33]:<34}{num(fn['entries']):>11}{num(fn['instructions']):>14}"
             f"{num(fn['cycles']):>14}{fn['cycles'] / total * 100:>7.2f}%{cpi(fn):>7.2f}"
         )
+        if with_events:
+            cyc = fn["cycles"] or 1
+            fold = (
+                event_cycles(fn, "fold") / fn["instructions"] * 100
+                if fn["instructions"]
+                else 0
+            )
+            row += (
+                f"{event_cycles(fn, 'lsu') / cyc * 100:>7.1f}"
+                f"{event_cycles(fn, 'cpi') / cyc * 100:>7.1f}{fold:>7.1f}"
+            )
+        rows.append(row)
+    if with_events:
+        rows.append(
+            "  LSU%: extra cycles of loads and stores (DWT LSUCNT) of the function's cycles; "
+            "MC%: DWT CPICNT, multi-cycle instructions,"
+        )
+        rows.append(
+            "  only to compare functions (it adds up to more than cycles - instructions); "
+            "fold%: folded instructions per instruction."
+        )
+    return rows
+
+
+def text_exc_overhead(prof):
+    ev = events_of(prof)
+    if not ev or not ev["wraps"]["exc"]:
+        return []
+    total = ev["wraps"]["exc"]
+    top = sorted(prof["functions"], key=lambda f: -f["events"]["exc"])[:5]
+    rows = [
+        "",
+        f"Exception overhead (DWT EXCCNT): {num(total * EVENT_UNIT)} cycles, where it landed",
+    ]
+    for fn in top:
+        if fn["events"]["exc"]:
+            rows.append(
+                f"  {fn['name'][:33]:<34}{num(event_cycles(fn, 'exc')):>12} cycles"
+                f"{fn['events']['exc'] / total * 100:>7.1f}%"
+            )
     return rows
 
 
@@ -192,7 +273,7 @@ def text_blocks(prof):
 
 def text(prof, top=25):
     rows = text_header(prof) + text_functions(prof, top) + text_exceptions(prof)
-    rows += text_periodic(prof) + text_blocks(prof)
+    rows += text_exc_overhead(prof) + text_periodic(prof) + text_blocks(prof)
     return "\n".join(rows) + "\n"
 
 
@@ -214,17 +295,33 @@ def diff_totals(pa, pb):
     ]
 
 
+def lsu_pct(entry):
+    """LSU extra cycles as a share of the function's cycles, or None."""
+    if not entry or not entry["cycles"]:
+        return None
+    return event_cycles(entry, "lsu") / entry["cycles"] * 100
+
+
 def diff_functions(pa, pb, top):
     by_b = {fn["name"]: fn for fn in pb["functions"]}
+    with_events = events_of(pa) is not None and events_of(pb) is not None
     rows = ["", f"Functions by cycles in A (top {top}): CPI"]
-    rows.append(f"  {'function':<34}{'A':>8}{'B':>8}{'B/A':>9}")
+    head = f"  {'function':<34}{'A':>8}{'B':>8}{'B/A':>9}"
+    if with_events:
+        head += f"{'LSU% A':>9}{'LSU% B':>9}"
+    rows.append(head)
     for fn in pa["functions"][:top]:
         other = by_b.get(fn["name"])
         cpi_b = f"{cpi(other):.2f}" if other and other["instructions"] else "-"
-        rows.append(
+        row = (
             f"  {fn['name'][:33]:<34}{cpi(fn):>8.2f}{cpi_b:>8}"
             f"{ratio(cpi(fn), cpi(other)) if other and other['instructions'] else '-':>9}"
         )
+        if with_events:
+            la, lb = lsu_pct(fn), lsu_pct(other)
+            row += f"{la:>9.1f}" if la is not None else f"{'-':>9}"
+            row += f"{lb:>9.1f}" if lb is not None else f"{'-':>9}"
+        rows.append(row)
     return rows
 
 

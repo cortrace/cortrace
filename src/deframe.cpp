@@ -106,11 +106,25 @@ std::vector<uint8_t> assemble_nibbles(
 namespace {
     // Port of _getPacket: interpret one 16-byte TPIU frame, appending the bytes
     // that belong to `want_stream` to `out`. Returns the updated current stream.
-    int get_packet(const uint8_t* rxed, int want_stream, int cur_stream, std::vector<uint8_t>& out)
+    //
+    // With `aux` the bytes of the stream `aux_stream` are kept too, each with
+    // the number of wanted-stream bytes delivered before it (`*main_count`,
+    // which counts them as they are appended).
+    int get_packet(const uint8_t* rxed, int want_stream, int cur_stream, std::vector<uint8_t>& out,
+        int aux_stream = -1, std::vector<AuxByte>* aux = nullptr, uint64_t* main_count = nullptr)
     {
         int delayed = NO_CHANGE;
         uint8_t lowbits = rxed[TPIU_PACKET_LEN - 1];
         int cur = cur_stream;
+        auto emit = [&](uint8_t b) {
+            if (want_stream < 0 || cur == want_stream) {
+                out.push_back(b);
+                if (main_count)
+                    ++*main_count;
+            } else if (aux && cur == aux_stream) {
+                aux->push_back({ b, main_count ? *main_count : 0 });
+            }
+        };
         for (int i = 0; i < TPIU_PACKET_LEN; i += 2) {
             if (rxed[i] & 1) {
                 // stream change, before or after this data byte
@@ -119,17 +133,12 @@ namespace {
                 else
                     cur = rxed[i] >> 1;
             } else {
-                if (cur) { // stream 0 = padding, dropped
-                    const uint8_t b = static_cast<uint8_t>(rxed[i] | (lowbits & 1));
-                    if (want_stream < 0 || cur == want_stream)
-                        out.push_back(b);
-                }
+                if (cur) // stream 0 = padding, dropped
+                    emit(static_cast<uint8_t>(rxed[i] | (lowbits & 1)));
             }
             // second byte of the pair is always data (for i < 14)
-            if (i < 14 && cur) {
-                if (want_stream < 0 || cur == want_stream)
-                    out.push_back(rxed[i + 1]);
-            }
+            if (i < 14 && cur)
+                emit(rxed[i + 1]);
             if (delayed != NO_CHANGE) {
                 cur = delayed;
                 delayed = NO_CHANGE;
@@ -225,12 +234,15 @@ void StreamDeframer::tpiu_byte(uint8_t d, std::vector<uint8_t>& out)
     if (byte_count_ == TPIU_PACKET_LEN) {
         ++frames_;
         byte_count_ = 0;
-        cur_stream_ = get_packet(rxed_, want_, cur_stream_, out);
+        cur_stream_
+            = get_packet(rxed_, want_, cur_stream_, out, aux_stream_, aux_out_, &main_bytes_);
     }
 }
 
-void StreamDeframer::feed(const uint8_t* raw, std::size_t len, std::vector<uint8_t>& out)
+void StreamDeframer::feed(
+    const uint8_t* raw, std::size_t len, std::vector<uint8_t>& out, std::vector<AuxByte>* aux)
 {
+    aux_out_ = aux;
     // assemble_nibbles(): every raw byte after the first gives the nibbles
     // hi(previous) and lo(this); the first `parity` nibbles are dropped and the
     // rest are paired, in the order the phase says.
@@ -257,6 +269,7 @@ void StreamDeframer::feed(const uint8_t* raw, std::size_t len, std::vector<uint8
         prev_ = r;
         have_prev_ = true;
     }
+    aux_out_ = nullptr;
 }
 
 DeframeResult tpiu_deframe(

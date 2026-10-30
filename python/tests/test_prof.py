@@ -106,6 +106,25 @@ def make_prof():
     }
 
 
+def with_events(p, sleep_wraps=0):
+    """`p` as a trace with DWT event counters on."""
+    p["events"] = {
+        "packets": 5000,
+        "unit": 256,
+        "unplaced": 0,
+        "sleep_cycles": sleep_wraps * 256,
+        "wraps": {"cpi": 100, "exc": 40, "sleep": sleep_wraps, "lsu": 30, "fold": 20},
+    }
+    shares = {
+        "hot": {"cpi": 0, "exc": 30, "sleep": 0, "lsu": 10, "fold": 2},
+        "cold": {"cpi": 0, "exc": 10, "sleep": 0, "lsu": 0, "fold": 0},
+        "idle": {"cpi": 0, "exc": 0, "sleep": 0, "lsu": 0, "fold": 0},
+    }
+    for fn in p["functions"]:
+        fn["events"] = shares[fn["name"]]
+    return p
+
+
 def write(tmp_path, name, data):
     path = tmp_path / name
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -394,3 +413,54 @@ def test_run_argument_errors(tmp_path, capsys):
         assert msg in capsys.readouterr().err
     a = prof.parse_run_args(base + ["--out-dir", str(tmp_path), "--raw-in", "r"])
     assert a.tag and os.path.isabs(a.elf)
+
+
+# ---- DWT events ---------------------------------------------------------------------------
+def test_text_report_with_event_counters():
+    out = prof.text(with_events(make_prof(), sleep_wraps=0))
+    assert (
+        "DWT events        : 5,000 packets, wraps of 256 (cpi 100, exc 40, sleep 0"
+        in out
+    )
+    assert "CPU load          : never asleep" in out
+    assert "LSU%" in out and "MC%" in out and "fold%" in out
+    hot = next(line for line in out.splitlines() if line.startswith("  hot "))
+    # 10*256 of 300 cycles; 2*256 folded per 100 instructions
+    assert hot.split()[-3:] == ["853.3", "0.0", "512.0"]
+    assert "Exception overhead (DWT EXCCNT): 10,240 cycles" in out
+    assert "75.0%" in out and "25.0%" in out  # hot 30 of 40, cold 10 of 40
+
+
+def test_text_report_cpu_load_and_the_cycles_asleep():
+    p = with_events(make_prof(), sleep_wraps=1_000_000)  # 256 M cycles asleep
+    out = prof.text(p)
+    assert (
+        "CPU load          : 63.7% (busy 450,000,000 cycles, asleep 256,000,000" in out
+    )
+    assert "(the cycles asleep added)" in out
+
+
+def test_events_without_exception_overhead_and_old_files():
+    p = with_events(make_prof())
+    p["events"]["wraps"]["exc"] = 0
+    assert "Exception overhead" not in prof.text(p)
+    p["events"]["packets"] = 0  # a trace with the counters off
+    out = prof.text(p)
+    assert "DWT events" not in out and "LSU%" not in out
+
+
+def test_diff_shows_the_lsu_share_of_both():
+    a = with_events(make_prof())
+    b = with_events(make_prof())
+    b["functions"] = b["functions"][:1]
+    b["functions"][0]["events"]["lsu"] = 100
+    out = prof.diff(a, b, top=3)
+    assert "LSU% A" in out and "LSU% B" in out
+    hot = next(line for line in out.splitlines() if line.startswith("  hot "))
+    assert hot.split()[-2:] == ["853.3", "8533.3"]
+    cold = next(line for line in out.splitlines() if line.startswith("  cold "))
+    assert cold.split()[-2:] == ["0.0", "-"]  # not in B
+    idle = next(line for line in out.splitlines() if line.startswith("  idle "))
+    assert idle.split()[-2:] == ["-", "-"]  # no cycles in A
+    plain = prof.diff(make_prof(), with_events(make_prof()))
+    assert "LSU%" not in plain

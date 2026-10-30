@@ -83,6 +83,18 @@ def test_coverage_profile_flag(probe):
     assert (0xE0041010, 0x810) not in probe.writes
 
 
+def test_dwt_events_flag(probe):
+    assert armctl.main(base_args("--os", "none", "--dwt-events", "lsu, sleep")) == 0
+    assert (0xE0001000, 0x40000001 | 1 << 20 | 1 << 19 | 1 << 10) in probe.writes
+
+
+def test_dwt_events_all_and_unknown(probe, capsys):
+    assert armctl.main(base_args("--os", "none", "--dwt-events", "all")) == 0
+    assert (0xE0001000, 0x40000001 | 0x3E0000 | 1 << 10) in probe.writes
+    assert armctl.main(base_args("--os", "none", "--dwt-events", "cache")) == 1
+    assert "unknown DWT event" in capsys.readouterr().err
+
+
 def test_platform_and_probe_are_required():
     with pytest.raises(SystemExit) as e:
         armctl.main(["--platform", "stm32h743"])

@@ -15,6 +15,7 @@
 #include "cortrace/cov_pipeline.hpp" // find_deframe_phase
 #include "cortrace/decoder.hpp"
 #include "cortrace/deframe.hpp"
+#include "cortrace/dwt_events.hpp"
 #include "cortrace/elfmem.hpp"
 #include "cortrace/profile.hpp"
 #include "cortrace/symbols.hpp"
@@ -95,6 +96,11 @@ int main(int argc, char** argv)
         .scan<'i', int>()
         .default_value(2)
         .help("ATB id of the ETM");
+    program.add_argument("--itm-stream")
+        .scan<'i', int>()
+        .default_value(1)
+        .help("ATB id of the ITM/DWT, whose event counter packets are placed in the code "
+              "(-1: ignore them)");
     const EtmV4Config etm_defaults;
     const struct {
         const char* name;
@@ -197,14 +203,26 @@ int main(int argc, char** argv)
         stderr, "[cortrace-prof] deframe phase (parity=%d, order=%d)\n", phase.parity, phase.order);
 
     StreamDeframer deframer(phase, want_stream);
+    const int itm_stream = program.get<int>("--itm-stream");
+    deframer.set_aux_stream(itm_stream);
+    DwtEventParser event_parser;
     std::vector<uint8_t> etm;
+    std::vector<AuxByte> aux;
+    std::vector<DwtEvent> events;
     uint64_t raw_bytes = 0, etm_bytes = 0;
     bool fatal = false;
     auto feed = [&](const uint8_t* data, std::size_t n) {
         etm.clear();
-        deframer.feed(data, n, etm);
+        aux.clear();
+        events.clear();
+        deframer.feed(data, n, etm, itm_stream >= 0 ? &aux : nullptr);
         raw_bytes += n;
         etm_bytes += etm.size();
+        // the events of this piece go in before its elements: the profiler
+        // places them among the elements by their byte index
+        event_parser.feed(aux.data(), aux.size(), events);
+        for (const DwtEvent& ev : events)
+            profiler.add_event(ev);
         if (!etm.empty() && !decoder->process(etm.data(), etm.size()))
             fatal = true;
     };
@@ -219,6 +237,7 @@ int main(int argc, char** argv)
     }
     std::fclose(f);
     decoder->flush();
+    profiler.finish();
     if (fatal) {
         std::fprintf(stderr, "error: the OpenCSD decoder stopped on a fatal error\n");
         return 1;
@@ -242,6 +261,14 @@ int main(int argc, char** argv)
         (unsigned long long)t.instructions,
         t.instructions ? double(t.cycles) / double(t.instructions) : 0.0,
         (unsigned long long)t.discontinuities());
+    if (t.event_packets > 0)
+        std::fprintf(stderr,
+            "[cortrace-prof] DWT events: %llu packets (cpi %llu, exc %llu, sleep %llu, lsu %llu, "
+            "fold %llu wraps), %llu rejected\n",
+            (unsigned long long)t.event_packets, (unsigned long long)t.event_wraps[0],
+            (unsigned long long)t.event_wraps[1], (unsigned long long)t.event_wraps[2],
+            (unsigned long long)t.event_wraps[3], (unsigned long long)t.event_wraps[4],
+            (unsigned long long)event_parser.rejected());
     if (auto d = profiler.clock_drift_ppm())
         std::fprintf(stderr, "[cortrace-prof] cycle clock vs timestamps: %+.1f ppm\n", *d);
     return 0;

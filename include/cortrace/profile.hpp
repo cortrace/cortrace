@@ -19,6 +19,19 @@
 // range. The cycle counts that a timestamp packet may carry are NOT added: the
 // counts alone already agree with the global timestamp to a few ppm.
 //
+// The ETM's cycle counts do not run while the core sleeps (WFI); the DWT's SLEEP
+// counter does. So the load of the CPU is busy / (busy + sleep), with busy the
+// cycle clock, and the cycle clock against the timestamps adds the sleep.
+//
+// DWT event counters. When the DWT counters (CPI, LSU, FOLD, EXC, SLEEP) are on,
+// their wrap packets arrive beside the ETM stream (add_event). A wrap is the
+// 256th event, so it happened at that very moment, in the code that was running:
+// counting the wraps per function is an unbiased estimate of that function's
+// share (every 256th event is a sample). The place of a wrap in the code is the
+// place of the packet among the ETM bytes; the ETM reports a branch some time
+// after it ran, so a wrap can land a little early (in the function that ran
+// before). That blurs neighbours that are shorter than that delay.
+//
 // The Profiler consumes Elements, never OpenCSD types, so it is unit-tested
 // with synthetic streams.
 //
@@ -26,12 +39,14 @@
 #ifndef CORTRACE_PROFILE_HPP
 #define CORTRACE_PROFILE_HPP
 
+#include "cortrace/dwt_events.hpp"
 #include "cortrace/element.hpp"
 #include "cortrace/symbols.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <optional>
 #include <string>
@@ -101,6 +116,16 @@ struct ProfileConfig {
     std::size_t top_blockers = 10; // places the periodic exception waited at, listed
 };
 
+// The DWT counters, in the order of the arrays below.
+constexpr std::size_t kEventKinds = 5;
+constexpr uint64_t kEventsPerWrap = 256; // the counters are 8 bits wide
+constexpr std::size_t kSleepKind = 2; // index of the SLEEP counter
+inline const char* event_name(std::size_t kind)
+{
+    static const char* const names[kEventKinds] = { "cpi", "exc", "sleep", "lsu", "fold" };
+    return names[kind];
+}
+
 // What the stream was, in total.
 struct ProfileTotals {
     uint64_t cycles = 0; // the cycle clock: all cycle counts added up
@@ -115,6 +140,9 @@ struct ProfileTotals {
     uint64_t overflow = 0; // trace lost: ETM overflow
     uint64_t trace_on = 0; // trace restarted
     uint64_t discontinuities() const { return nosync + overflow; }
+    uint64_t event_wraps[kEventKinds] = {}; // counter wraps seen, per counter
+    uint64_t event_packets = 0; // packets with at least one wrap
+    uint64_t events_unplaced = 0; // wraps before the first instruction range
 };
 
 struct FunctionStat {
@@ -123,6 +151,7 @@ struct FunctionStat {
     uint64_t ranges = 0;
     uint64_t instructions = 0;
     double cycles = 0; // self cycles
+    uint64_t events[kEventKinds] = {}; // counter wraps that happened in the function
 };
 
 // One exception number.
@@ -173,6 +202,14 @@ public:
 
     // Feed one element, in stream order.
     void process(const Element& e);
+
+    // A DWT event packet, in stream order. `ev.pos` is the number of ETM bytes
+    // before it; it is placed among the elements by their byte_index. Add the
+    // events of a block of trace before the elements of the same block.
+    void add_event(const DwtEvent& ev) { events_.push_back(ev); }
+
+    // End of the trace: place the events that are still waiting.
+    void finish();
 
     const ProfileTotals& totals() const { return totals_; }
     const ProfileConfig& config() const { return cfg_; }
@@ -226,6 +263,7 @@ private:
     void on_exception(uint32_t number);
     void on_exception_return();
     void on_discontinuity(ElementKind why);
+    void place_events(uint64_t before);
     ExceptionStat& exc_stat(uint32_t number);
 
     const SymbolTable& syms_;
@@ -242,6 +280,7 @@ private:
     std::vector<Isr> stack_; // running exceptions, innermost last
     std::vector<Isr> returned_; // exceptions returned since the last cycle count
     std::map<uint32_t, ExceptionStat> exc_; // by number
+    std::deque<DwtEvent> events_; // event packets not placed yet
     std::vector<Tick> ticks_; // occurrences of the periodic exception
     std::size_t segment_ = 0;
     uint32_t last_end_ = 0; // end of the last range

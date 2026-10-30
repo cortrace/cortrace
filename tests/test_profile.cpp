@@ -1,6 +1,7 @@
 // Cortrace — Profiler unit tests (synthetic element streams).
 //
 // SPDX-License-Identifier: MIT
+#include "cortrace/dwt_events.hpp"
 #include "cortrace/profile.hpp"
 #include "test_framework.hpp"
 
@@ -512,4 +513,73 @@ TEST(profile_json_content_and_string_escapes)
     CHECK(has(j, "\"blockers\": [\n"));
     CHECK(has(j, "\"blocks\": [\n"));
     CHECK(!has(j, "\"drift_ppm\": null"));
+}
+
+// ---- DWT events ------------------------------------------------------------------------------
+namespace {
+Element range_at(uint32_t start, uint32_t end, uint64_t idx)
+{
+    Element e = Element::instr_range(start, end, BranchKind::None, false, idx);
+    e.num_instr = 2;
+    return e;
+}
+} // namespace
+
+TEST(events_are_placed_in_the_function_that_ran_at_their_byte)
+{
+    const SymbolTable s = make_syms();
+    Profiler p(s, {});
+    p.add_event({ kDwtSleep, 5 }); // before any instruction: nowhere to put it
+    p.add_event({ kDwtLsu, 20 });
+    p.add_event({ static_cast<uint8_t>(kDwtCpi | kDwtLsu), 40 });
+    p.add_event({ kDwtFold, 40 });
+    p.process(range_at(A, A + 8, 10));
+    p.process(range_at(B, B + 8, 30)); // the first event (20) came between the two
+    CHECK_EQ(p.totals().event_packets, 2u);
+    p.finish(); // the rest ran after the last element
+    CHECK_EQ(p.totals().event_packets, 4u);
+    CHECK_EQ(p.totals().event_wraps[2], 1u); // sleep
+    CHECK_EQ(p.totals().event_wraps[3], 2u); // lsu
+    CHECK_EQ(p.totals().event_wraps[0], 1u); // cpi
+    CHECK_EQ(p.totals().event_wraps[4], 1u); // fold
+    CHECK_EQ(p.totals().event_wraps[1], 0u); // exc
+    CHECK_EQ(p.totals().events_unplaced, 1u);
+
+    const auto fns = p.functions();
+    CHECK_EQ(fns.size(), 2u);
+    for (const FunctionStat& f : fns) {
+        if (f.name == "A") {
+            CHECK_EQ(f.events[3], 1u);
+            CHECK_EQ(f.events[0], 0u);
+        } else {
+            CHECK_EQ(f.events[3], 1u);
+            CHECK_EQ(f.events[0], 1u);
+            CHECK_EQ(f.events[4], 1u);
+        }
+    }
+    CHECK_EQ(std::string(event_name(3)), std::string("lsu"));
+
+    const std::string j = p.to_json("fw.elf");
+    CHECK(json_balanced(j));
+    CHECK(has(j, "\"events\": {\"packets\": 4, \"unit\": 256, \"unplaced\": 1, "));
+    CHECK(has(j, "\"wraps\": {\"cpi\": 1, \"exc\": 0, \"sleep\": 1, \"lsu\": 2, \"fold\": 1}"));
+    CHECK(has(j, "\"events\": {\"cpi\": 1, \"exc\": 0, \"sleep\": 0, \"lsu\": 1, \"fold\": 1}"));
+}
+
+TEST(events_sleep_cycles_make_up_the_clock_against_the_timestamps)
+{
+    const SymbolTable s = make_syms();
+    ProfileConfig c;
+    c.sysclk_hz = 150e6;
+    c.tsgen_hz = 75e6;
+    Profiler p(s, c);
+    p.process(Element::make_timestamp(1000));
+    p.process(cc(1000)); // the core ran 1000 cycles ...
+    for (int i = 0; i < 4; i++) // ... and slept 4 * 256 = 1024
+        p.add_event({ kDwtSleep, 0 });
+    p.process(Element::make_timestamp(2000)); // 1000 ticks of 75 MHz = 2000 cycles
+    p.finish();
+    CHECK(p.clock_drift_ppm());
+    CHECK(*p.clock_drift_ppm() > 11999.0 && *p.clock_drift_ppm() < 12001.0); // 2024 against 2000
+    CHECK(has(p.to_json("fw.elf"), "\"sleep_cycles\": 1024"));
 }

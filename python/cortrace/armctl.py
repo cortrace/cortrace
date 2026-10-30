@@ -22,6 +22,13 @@ def log(msg):
     print(f"[cortrace-arm] {msg}", file=sys.stderr)
 
 
+def _dwt_events(text):
+    names = [t.strip() for t in text.split(",") if t.strip()]
+    if names == ["all"]:
+        return tuple(trace_arm.DWT_EVENT_BITS)
+    return tuple(names)
+
+
 def build_parser():
     """Argument parser of `cortrace arm`."""
     ap = argparse.ArgumentParser(
@@ -61,6 +68,15 @@ def build_parser():
         help="ETM profile: timing (cycle counts + timestamps, for Perfetto) or "
         "coverage (branches only, about 4x fewer trace bytes, for `cortrace "
         "cover`; the Perfetto time bases need timing) (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--dwt-events",
+        type=_dwt_events,
+        default=(),
+        metavar="LIST",
+        help="DWT event counters to send as packets, comma separated: "
+        f"{','.join(trace_arm.DWT_EVENT_BITS)} or all. Each packet stands for 256 "
+        "events; `cortrace profile` places them in the functions. Default: none.",
     )
     return ap
 
@@ -116,6 +132,7 @@ def main(argv=None):
             width=args.width,
             etm=not args.no_etm,
             profile=args.profile,
+            dwt_events=args.dwt_events,
             log=log,
         )
     except (

@@ -66,6 +66,15 @@ struct MultiDeframeResult {
     std::size_t syncs = 0;
 };
 
+// A byte of a second ATB stream, with its place among the bytes of the main
+// stream: `pos` main-stream bytes were delivered before it. A decoder that
+// numbers the main-stream bytes (OpenCSD's index) can then tell which of its
+// elements came before the byte.
+struct AuxByte {
+    uint8_t value;
+    uint64_t pos;
+};
+
 // How much of a raw capture the phase search looks at before locking the winner.
 constexpr std::size_t kPhaseSearchPrefix = 8u << 20;
 
@@ -119,8 +128,17 @@ public:
     // want_stream < 0 keeps every stream. Requires supported(phase).
     StreamDeframer(const DeframePhase& phase, int want_stream);
 
-    // Appends the bytes of the wanted stream found in raw[0..len) to `out`.
-    void feed(const uint8_t* raw, std::size_t len, std::vector<uint8_t>& out);
+    // Also keep the bytes of this stream (the ITM/DWT, 1) beside the wanted
+    // one, see AuxByte. -1: none.
+    void set_aux_stream(int id) { aux_stream_ = id; }
+
+    // Appends the bytes of the wanted stream found in raw[0..len) to `out`,
+    // and with `aux` those of the aux stream, in the order of the stream.
+    void feed(const uint8_t* raw, std::size_t len, std::vector<uint8_t>& out,
+        std::vector<AuxByte>* aux = nullptr);
+
+    // Bytes of the wanted stream delivered so far (not reset by reset()).
+    uint64_t main_bytes() const { return main_bytes_; }
 
     // The raw stream was interrupted (frames lost): forget the half-assembled
     // byte, the TPIU frame in progress and the current stream, and wait for the
@@ -136,6 +154,9 @@ private:
     void tpiu_byte(uint8_t d, std::vector<uint8_t>& out);
 
     int parity_, order_, want_;
+    int aux_stream_ = -1;
+    std::vector<AuxByte>* aux_out_ = nullptr;
+    uint64_t main_bytes_ = 0;
     // nibble assembly
     bool have_prev_ = false;
     uint8_t prev_ = 0;

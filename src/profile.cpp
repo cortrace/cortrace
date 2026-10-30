@@ -101,8 +101,30 @@ ExceptionStat& Profiler::exc_stat(uint32_t number)
     return st;
 }
 
+void Profiler::place_events(uint64_t before)
+{
+    while (!events_.empty() && events_.front().pos <= before) {
+        const uint8_t mask = events_.front().mask;
+        events_.pop_front();
+        totals_.event_packets++;
+        const uint8_t bits[kEventKinds] = { kDwtCpi, kDwtExc, kDwtSleep, kDwtLsu, kDwtFold };
+        for (std::size_t k = 0; k < kEventKinds; k++) {
+            if (!(mask & bits[k]))
+                continue;
+            totals_.event_wraps[k]++;
+            if (last_fn_ >= 0)
+                fn_stats_[last_fn_].events[k]++;
+            else
+                totals_.events_unplaced++;
+        }
+    }
+}
+
+void Profiler::finish() { place_events(UINT64_MAX); }
+
 void Profiler::process(const Element& e)
 {
+    place_events(e.byte_index);
     switch (e.kind) {
     case ElementKind::InstrRange:
         on_range(e);
@@ -255,8 +277,11 @@ std::optional<double> Profiler::clock_drift_ppm() const
         return std::nullopt;
     const double expected = static_cast<double>(totals_.ts_last - totals_.ts_first)
         * (cfg_.sysclk_hz / cfg_.tsgen_hz);
+    // The ETM's cycle counts stop while the core sleeps (WFI), the timestamps do
+    // not: the cycles asleep, counted by the DWT, make up the difference.
     const double got = static_cast<double>(totals_.clock_at_last_ts)
-        - static_cast<double>(totals_.clock_at_first_ts);
+        - static_cast<double>(totals_.clock_at_first_ts)
+        + static_cast<double>(totals_.event_wraps[kSleepKind] * kEventsPerWrap);
     return (got - expected) / expected * 1e6;
 }
 
@@ -398,6 +423,18 @@ std::string Profiler::to_json(const std::string& elf_path) const
         static_cast<unsigned long long>(t.nosync), static_cast<unsigned long long>(t.overflow),
         static_cast<unsigned long long>(t.trace_on));
 
+    append(j,
+        " \"events\": {\"packets\": %llu, \"unit\": %llu, \"unplaced\": %llu, "
+        "\"sleep_cycles\": %llu, \"wraps\": {",
+        static_cast<unsigned long long>(t.event_packets),
+        static_cast<unsigned long long>(kEventsPerWrap),
+        static_cast<unsigned long long>(t.events_unplaced),
+        static_cast<unsigned long long>(t.event_wraps[kSleepKind] * kEventsPerWrap));
+    for (std::size_t k = 0; k < kEventKinds; k++)
+        append(j, "%s\"%s\": %llu", k ? ", " : "", event_name(k),
+            static_cast<unsigned long long>(t.event_wraps[k]));
+    j += "}},\n";
+
     j += " \"functions\": [";
     bool first = true;
     for (const FunctionStat& f : functions()) {
@@ -406,7 +443,11 @@ std::string Profiler::to_json(const std::string& elf_path) const
             first ? "" : ",", quote(f.name).c_str(), static_cast<unsigned long long>(f.entries),
             static_cast<unsigned long long>(f.ranges),
             static_cast<unsigned long long>(f.instructions));
-        append(j, "\"cycles\": %.1f}", f.cycles);
+        append(j, "\"cycles\": %.1f, \"events\": {", f.cycles);
+        for (std::size_t k = 0; k < kEventKinds; k++)
+            append(j, "%s\"%s\": %llu", k ? ", " : "", event_name(k),
+                static_cast<unsigned long long>(f.events[k]));
+        j += "}}";
         first = false;
     }
     j += "\n ],\n \"exceptions\": [";
