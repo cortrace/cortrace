@@ -27,7 +27,7 @@ trace 链路没有校验，所以 cortrace 不猜：丢掉的数据在结果里�
 要把 NuttX 的软件 note 合到同一条时间轴上，用 pynuttx 的 `nxtrace merge`。
 
 > 设计与路线图见 [`docs/00-architecture.md`](docs/00-architecture.md)，覆盖率的设计和实测见
-> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md)，周期剖析见 [`docs/08-cycle-profile.md`](docs/08-cycle-profile.md)。
+> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md)，周期剖析见 [`docs/08-cycle-profile.md`](docs/08-cycle-profile.md)，实测数据汇总见 [`docs/09-profile-measurements.md`](docs/09-profile-measurements.md)。
 
 ## 安装（Ubuntu 22.04 amd64）
 

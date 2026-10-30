@@ -441,7 +441,7 @@ cortrace profile diff out/prof_a.json out/prof_b.json     # 改了一个条件�
 - 布防时加 `--dwt-events all`（或 `lsu,sleep` 等），报告里多出每个函数的访存额外周期（LSU%）、CPU 占用率（SLEEP）、
   异常开销落在哪（EXC）。其中 LSU 能把访存停顿单独分出来；睡眠期间 ETM 的周期计数不走，占用率按 忙/(忙+睡) 算。
 - ETM 只给周期，不给停顿的原因。取指停顿（I-cache、Flash）要改一个条件跑两次再 `diff`。
-  方法、验证数据和局限见 [`08-cycle-profile.md`](08-cycle-profile.md)。
+  方法、验证数据和局限见 [`08-cycle-profile.md`](08-cycle-profile.md)，两个固件的实测数据汇总见 [`09-profile-measurements.md`](09-profile-measurements.md)。
 
 ## 5. 网页点击模式
 
