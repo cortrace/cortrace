@@ -438,7 +438,9 @@ cortrace profile diff out/prof_a.json out/prof_b.json     # 改了一个条件�
 - 原始数据会落盘（约 75 MB/s），处理约为抓取时长的 6 倍，所以超过 5 秒要 `--allow-long`。抓取丢了 UDP 帧会直接失败。
 - 给了 `--sysclk-hz` 和 `--tsgen-hz`，报告会写周期时钟与全局时间戳的偏差（实测几个 ppm 以内）。
 - 默认分析 SysTick（异常 15）；`--period-exception N`、`--period-cycles` 改。
-- trace 只给周期，不给停顿的原因。区分 I-cache、D-cache、Flash 要改一个条件跑两次再 `diff`。
+- 布防时加 `--dwt-events all`（或 `lsu,sleep` 等），报告里多出每个函数的访存额外周期（LSU%）、CPU 占用率（SLEEP）、
+  异常开销落在哪（EXC）。其中 LSU 能把访存停顿单独分出来；睡眠期间 ETM 的周期计数不走，占用率按 忙/(忙+睡) 算。
+- ETM 只给周期，不给停顿的原因。取指停顿（I-cache、Flash）要改一个条件跑两次再 `diff`。
   方法、验证数据和局限见 [`08-cycle-profile.md`](08-cycle-profile.md)。
 
 ## 5. 网页点击模式
