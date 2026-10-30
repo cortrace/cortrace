@@ -20,6 +20,8 @@ reference decoder [OpenCSD](https://github.com/Linaro/OpenCSD), and gives you tw
 - **Code coverage** with no firmware changes and no instrumentation: instructions, source lines, branch outcomes
   and functions, reported as text (laid out like Ozone), JSON, lcov or Cobertura. `cortrace cover stream` runs for
   hours without writing the raw trace to disk.
+- **Cycle-accurate profiling** from the ETM cycle counts: cycles and CPI per function, exception entry and run
+  time, how late SysTick was, and cache on/off comparisons (`cortrace profile`).
 
 The trace link has no checksum, so cortrace does not guess: lost data is marked as lost in the results instead of
 being bridged with a stale PC, and coverage counts only clean trace segments that pass static checks, with the
@@ -29,7 +31,7 @@ It is verified on the STM32H743 (Cortex-M7, ETMv4) with bare-metal, NuttX and Fr
 `.deb` for Ubuntu 22.04. To put NuttX's software notes on the same time axis, use `nxtrace merge` from pynuttx.
 
 > Design and roadmap: [`docs/00-architecture.md`](docs/00-architecture.md). Coverage design and measurements:
-> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md).
+> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md). Cycle profiling: [`docs/08-cycle-profile.md`](docs/08-cycle-profile.md) (in Chinese).
 
 ## Install (Ubuntu 22.04 amd64)
 
@@ -49,6 +51,7 @@ Linux >= 5.7).
 | `cortrace capture` | grab a parallel trace from the FPGA and decode it to Perfetto (`--notes` also writes the bytes on an ITM stimulus port and the hardware thread-switch log, the inputs of `nxtrace merge`) |
 | `cortrace serve` | in ui.perfetto.dev choose *Record new trace -> Linux -> WebSocket 127.0.0.1:8037* and press **Start**: the capture runs and the result comes back in the same page |
 | `cortrace cover` | code coverage: `run` captures a few seconds and decodes offline, `stream` captures for hours without storing the raw trace; `report`/`merge`/`diff` convert, add up and compare |
+| `cortrace profile` | cycle-accurate profile: `run` captures and processes, `report` prints, `diff` compares two experiments (caches on/off, before/after a change) |
 | `cortrace decode` | run `cortrace-decode` (ETM/DWT/ITM -> Perfetto) directly, arguments passed through |
 | `cortrace tcbmap` | read the live thread-name map |
 | `cortrace arm` | arm ETM/ITM/DWT through a running OpenOCD (chips live in `platforms/`) |
@@ -191,7 +194,7 @@ requires subjects of the form `type(scope): description`; only `docs` may omit t
 ```
 include/cortrace/   Public headers (element / symbols / callstack ...)
 src/                Core implementation (no OpenCSD dependency)
-tools/              cortrace-decode (C++), cortrace-grab (C, FPGA UDP capture)
+tools/              cortrace-decode, cortrace-cov, cortrace-prof (C++), cortrace-grab (C, FPGA UDP capture)
 python/cortrace/    the cortrace command line and Python package (capture / serve / tcbmap / fpga ...)
 python/tests/       Python unit tests
 tests/              Zero-dependency C++ unit tests + framework

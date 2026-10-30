@@ -17,6 +17,8 @@
   在浏览器里打开。线程名由 OS 插件（内置 NuttX、FreeRTOS）从 ELF 和目标内存读出。
 - **代码覆盖率**：不改固件、不插桩，按指令、源码行、分支结局和函数统计，输出文本（Ozone 风格）、JSON、lcov、
   Cobertura。`cortrace cover stream` 可以连续抓几个小时，原始 trace 不落盘。
+- **周期精确的剖析**：用 ETM 的周期计数得到每个函数的自身周期和 CPI、异常的入口和运行周期、SysTick 的晚到量，
+  以及缓存开关的对照（`cortrace profile`）。
 
 trace 链路没有校验，所以 cortrace 不猜：丢掉的数据在结果里如实标出，不会拿过期的 PC 编造程序流；覆盖率只统计
 通过静态校验的干净 trace 段，报告里写明丢了多少。
@@ -25,7 +27,7 @@ trace 链路没有校验，所以 cortrace 不猜：丢掉的数据在结果里�
 要把 NuttX 的软件 note 合到同一条时间轴上，用 pynuttx 的 `nxtrace merge`。
 
 > 设计与路线图见 [`docs/00-architecture.md`](docs/00-architecture.md)，覆盖率的设计和实测见
-> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md)。
+> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md)，周期剖析见 [`docs/08-cycle-profile.md`](docs/08-cycle-profile.md)。
 
 ## 安装（Ubuntu 22.04 amd64）
 
@@ -43,6 +45,7 @@ cortrace --help
 | `cortrace capture` | 从 FPGA 抓一段并口 trace → 解码成 Perfetto（`--notes` 另外写出 ITM 上的 note 字节流和硬件线程切换日志，给 `nxtrace merge` 用） |
 | `cortrace serve` | 在 ui.perfetto.dev 的 *Record new trace → Linux → WebSocket 127.0.0.1:8037* 里点 **Start** 即抓取，结果回到同一页面 |
 | `cortrace cover` | 代码覆盖率：`run` 抓几秒离线解码，`stream` 连续抓几小时、原始数据不落盘；`report`/`merge`/`diff` 换格式、合并、对比 |
+| `cortrace profile` | 周期精确的剖析：`run` 抓取并处理，`report` 出报告，`diff` 对比两次实验（缓存开关、改参数前后） |
 | `cortrace decode` | 直接调用 `cortrace-decode`（ETM/DWT/ITM → Perfetto），参数原样透传 |
 | `cortrace tcbmap` | 读活线程名映射 |
 | `cortrace arm` | 通过常驻 OpenOCD 布防 ETM/ITM/DWT（芯片见 `platforms/`） |

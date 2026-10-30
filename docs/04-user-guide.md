@@ -328,6 +328,7 @@ features: DDR3 ring, stream self-test, run-time port width
 | `cortrace fpga net` | ARP 探测 FPGA 接在哪个网口（需要 `CAP_NET_RAW`） |
 | `cortrace arm --platform P --elf fw.elf --probe-telnet HOST:PORT` | 通过常驻 OpenOCD 给目标布防 ETM/ITM/DWT；`--list` 列出平台，`--os none` 裸机（不监视变量），`--no-etm` 只布防 ITM/DWT，`--width` 设 TPIU 位宽，`--profile coverage` 只要覆盖率时关掉周期计数和时间戳 |
 | `cortrace cover run/stream/report/merge/diff` | 不插桩的代码覆盖率，见 4.6、4.7 节 |
+| `cortrace profile run/report/diff` | 周期精确的函数剖析、中断延迟抖动、缓存对照，见 4.8 节 |
 | `cortrace os list` / `os watch --elf fw.elf` / `os resolve …` | 列出 OS 插件 / 打印 DWT 要监视的变量与地址 / 把指针值解析成线程映射 |
 
 **布防**：先起一个不带任何 trace 配置的 OpenOCD，让它常驻（它持有 `C_DEBUGEN`），然后：
@@ -424,6 +425,21 @@ sudo sysctl -w net.core.rmem_max=268435456
 
 **与 `cover run` 结果的差别。** 同一份数据上，`stream` 不会比 `run` 多报任何指令；它多隔离的只有流开头第一个 A-sync 之前的那一小段
 （还没同步的解码器给出的区间不可信）。每个块的第一个区间没有"上一个区间去哪"可检查，所以流向校验次数略少，由前一块多解的几个段补上。
+
+### 4.8 周期精确的性能剖析（`profile`）
+不插桩得到每个函数的自身周期和 CPI、每个异常的入口和运行周期、SysTick 的晚到量（中断延迟抖动）、以及单独成段的基本块的周期分布。
+需要 ETM 打开周期计数，所以布防要用 `timing` profile（`coverage` profile 关掉了周期计数）。
+```sh
+cortrace arm --platform stm32h743 --os none --probe-telnet 127.0.0.1:4444 --profile timing
+cortrace profile run --elf fw.elf --out-dir out --iface <nic> --secs 3 --sysclk-hz 150e6 --tsgen-hz 75e6
+cortrace profile report out/prof_<tag>.json --top 40
+cortrace profile diff out/prof_a.json out/prof_b.json     # 改了一个条件，跑两次，对比 CPI 和异常运行周期
+```
+- 原始数据会落盘（约 75 MB/s），处理约为抓取时长的 6 倍，所以超过 5 秒要 `--allow-long`。抓取丢了 UDP 帧会直接失败。
+- 给了 `--sysclk-hz` 和 `--tsgen-hz`，报告会写周期时钟与全局时间戳的偏差（实测几个 ppm 以内）。
+- 默认分析 SysTick（异常 15）；`--period-exception N`、`--period-cycles` 改。
+- trace 只给周期，不给停顿的原因。区分 I-cache、D-cache、Flash 要改一个条件跑两次再 `diff`。
+  方法、验证数据和局限见 [`08-cycle-profile.md`](08-cycle-profile.md)。
 
 ## 5. 网页点击模式
 
@@ -575,6 +591,7 @@ cortrace capture --notes --itm-port 1 --elf nuttx --secs 1 --tag t --probe-telne
 cortrace cover run --elf fw.elf --secs 2 --exclude '*/Drivers/*'   # 代码覆盖率（4.6 节）
 cortrace cover stream --elf fw.elf --iface <nic> --secs 3600       # 小时级覆盖率，不存原始数据（4.7 节）
 cortrace cover report cov_t.json --format lcov -o cov.info     # 覆盖率换格式（json / lcov / cobertura）
+cortrace profile run --elf fw.elf --secs 3 --sysclk-hz 150e6    # 周期剖析（4.8 节，需 --profile timing 布防）
 cortrace serve --elf nuttx --tcbmap m.txt                      # 网页点击（浏览器里点 Start）
 cortrace tcbmap --elf nuttx --telnet 127.0.0.1:4444 --out m.txt  # 线程名映射
 python -m nxtrace merge -o fused.tar --hw hw_t.perfetto \
