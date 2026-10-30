@@ -573,13 +573,32 @@ TEST(events_sleep_cycles_make_up_the_clock_against_the_timestamps)
     c.sysclk_hz = 150e6;
     c.tsgen_hz = 75e6;
     Profiler p(s, c);
-    p.process(Element::make_timestamp(1000));
+    p.add_event({ kDwtSleep, 1 }); // asleep before the first timestamp: not in the span
+    p.process(Element::make_timestamp(1000, 10));
     p.process(cc(1000)); // the core ran 1000 cycles ...
-    for (int i = 0; i < 4; i++) // ... and slept 4 * 256 = 1024
-        p.add_event({ kDwtSleep, 0 });
-    p.process(Element::make_timestamp(2000)); // 1000 ticks of 75 MHz = 2000 cycles
+    for (int i = 0; i < 4; i++) // ... and slept 4 * 256 = 1024 between the timestamps
+        p.add_event({ kDwtSleep, 15 });
+    p.process(Element::make_timestamp(2000, 20)); // 1000 ticks of 75 MHz = 2000 cycles
+    p.add_event({ kDwtSleep, 30 }); // and after the last one
     p.finish();
     CHECK(p.clock_drift_ppm());
     CHECK(*p.clock_drift_ppm() > 11999.0 && *p.clock_drift_ppm() < 12001.0); // 2024 against 2000
-    CHECK(has(p.to_json("fw.elf"), "\"sleep_cycles\": 1024"));
+    CHECK(has(p.to_json("fw.elf"), "\"sleep_cycles\": 1536"));
+}
+
+TEST(periodic_is_not_measured_when_the_core_slept)
+{
+    const SymbolTable s = make_syms();
+    Profiler p(s, {});
+    tick(p, 989);
+    tick(p, 989);
+    tick(p, 989);
+    p.add_event({ kDwtSleep, 0 });
+    p.finish();
+    const PeriodicStat st = p.periodic();
+    CHECK(st.asleep);
+    CHECK_EQ(st.occurrences, 3u);
+    CHECK_EQ(st.period_cycles, 0u);
+    CHECK_EQ(st.lateness.count(), 0u);
+    CHECK(has(p.to_json("fw.elf"), "\"asleep\": true"));
 }

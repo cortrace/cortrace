@@ -223,10 +223,12 @@ void Profiler::on_timestamp(uint64_t ts)
     if (totals_.timestamps == 0) {
         totals_.ts_first = ts;
         totals_.clock_at_first_ts = totals_.cycles;
+        totals_.sleep_wraps_at_first_ts = totals_.event_wraps[kSleepKind];
     }
     totals_.timestamps++;
     totals_.ts_last = ts;
     totals_.clock_at_last_ts = totals_.cycles;
+    totals_.sleep_wraps_at_last_ts = totals_.event_wraps[kSleepKind];
 }
 
 void Profiler::on_exception(uint32_t number)
@@ -278,10 +280,12 @@ std::optional<double> Profiler::clock_drift_ppm() const
     const double expected = static_cast<double>(totals_.ts_last - totals_.ts_first)
         * (cfg_.sysclk_hz / cfg_.tsgen_hz);
     // The ETM's cycle counts stop while the core sleeps (WFI), the timestamps do
-    // not: the cycles asleep, counted by the DWT, make up the difference.
+    // not: the cycles asleep between the two timestamps, counted by the DWT,
+    // make up the difference.
     const double got = static_cast<double>(totals_.clock_at_last_ts)
         - static_cast<double>(totals_.clock_at_first_ts)
-        + static_cast<double>(totals_.event_wraps[kSleepKind] * kEventsPerWrap);
+        + static_cast<double>(
+            (totals_.sleep_wraps_at_last_ts - totals_.sleep_wraps_at_first_ts) * kEventsPerWrap);
     return (got - expected) / expected * 1e6;
 }
 
@@ -315,6 +319,10 @@ PeriodicStat Profiler::periodic() const
         if (t.resolved)
             ticks.push_back(&t);
     st.occurrences = ticks.size();
+    if (totals_.event_wraps[kSleepKind] > 0) {
+        st.asleep = true;
+        return st;
+    }
 
     // The period: given, or the median interval inside the unbroken runs.
     std::vector<uint64_t> intervals;
@@ -464,9 +472,11 @@ std::string Profiler::to_json(const std::string& elf_path) const
     append(j, "\n ],\n \"periodic\": {\"exception\": %u, \"name\": %s, \"occurrences\": %llu, ",
         p.exception, quote(exception_name(p.exception)).c_str(),
         static_cast<unsigned long long>(p.occurrences));
-    append(j, "\"period_cycles\": %llu, \"period_given\": %s, \"lateness\": %s, \"blockers\": [",
+    append(j,
+        "\"period_cycles\": %llu, \"period_given\": %s, \"asleep\": %s, \"lateness\": %s, "
+        "\"blockers\": [",
         static_cast<unsigned long long>(p.period_cycles), p.period_given ? "true" : "false",
-        hist_json(p.lateness).c_str());
+        p.asleep ? "true" : "false", hist_json(p.lateness).c_str());
     first = true;
     for (const Blocker& b : p.blockers) {
         append(j, "%s\n   {\"function\": %s, \"address\": %u, \"count\": %llu, \"min\": %llu, ",

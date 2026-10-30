@@ -464,3 +464,10 @@ def test_diff_shows_the_lsu_share_of_both():
     assert idle.split()[-2:] == ["-", "-"]  # no cycles in A
     plain = prof.diff(make_prof(), with_events(make_prof()))
     assert "LSU%" not in plain
+
+
+def test_periodic_lateness_is_not_reported_for_a_trace_with_sleep():
+    p = with_events(make_prof(), sleep_wraps=10)
+    p["periodic"]["asleep"] = True
+    out = prof.text(p)
+    assert "lateness not measured" in out and "was waiting at" not in out

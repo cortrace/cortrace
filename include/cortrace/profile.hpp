@@ -135,6 +135,7 @@ struct ProfileTotals {
     uint64_t timestamps = 0;
     uint64_t ts_first = 0, ts_last = 0; // first and last global timestamp
     uint64_t clock_at_first_ts = 0, clock_at_last_ts = 0; // the cycle clock at those two
+    uint64_t sleep_wraps_at_first_ts = 0, sleep_wraps_at_last_ts = 0; // SLEEP wraps by then
     double no_instr_cycles = 0; // cycles of windows without an instruction (exception entry...)
     uint64_t nosync = 0; // trace lost: decoder lost sync (after the first range)
     uint64_t overflow = 0; // trace lost: ETM overflow
@@ -181,6 +182,9 @@ struct PeriodicStat {
     uint64_t occurrences = 0;
     uint64_t period_cycles = 0; // 0: fewer than two occurrences in a run
     bool period_given = false;
+    // The core slept at some point: the cycle clock stops then, so the
+    // intervals are not time and nothing is measured.
+    bool asleep = false;
     CycleHist<16384> lateness;
     std::vector<Blocker> blockers; // by total lateness, the biggest first
 };

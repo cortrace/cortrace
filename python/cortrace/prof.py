@@ -229,6 +229,12 @@ def text_exceptions(prof):
 
 def text_periodic(prof):
     per = prof["periodic"]
+    if per.get("asleep"):
+        return [
+            "",
+            f"{per['name']}: {num(per['occurrences'])} occurrences; lateness not measured, "
+            "the core slept and the ETM cycle clock stops while it sleeps",
+        ]
     if not per["period_cycles"]:
         return ["", f"{per['name']}: fewer than two occurrences, no lateness"]
     hz = prof["clock"]["sysclk_hz"]
