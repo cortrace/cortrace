@@ -18,6 +18,7 @@ SUMMARIES = {
     "serve": 'Perfetto "Record" target: press Start in the UI to capture and view',
     "cover": "code coverage from the trace: run, report (text/json/lcov/cobertura), "
     "merge, diff",
+    "profile": "cycle-accurate profile from the trace: run, report, diff",
     "tcbmap": "dump the live pid -> thread-name map through OpenOCD",
     "os": "OS plugins: list, find the variable to watch, resolve thread names",
     "arm": "arm ETM/ITM/DWT trace on the target through a running OpenOCD",
@@ -66,6 +67,7 @@ COMMANDS = {
     "capture": _lazy("capture"),
     "serve": _lazy("serve"),
     "cover": _lazy("cover"),
+    "profile": _lazy("prof"),
     "tcbmap": _lazy("tcbmap"),
     "os": _lazy("osctl"),
     "arm": _lazy("armctl"),

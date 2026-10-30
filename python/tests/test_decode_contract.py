@@ -12,11 +12,12 @@ import subprocess
 
 import pytest
 
-from cortrace import capture, cover
+from cortrace import capture, cover, prof
 from cortrace._paths import find_binary
 
 BINARY = find_binary("CORTRACE_DECODE", "cortrace-decode")
 COV_BINARY = find_binary("CORTRACE_COV", "cortrace-cov")
+PROF_BINARY = find_binary("CORTRACE_PROF", "cortrace-prof")
 
 pytestmark = pytest.mark.skipif(
     not (os.path.isfile(BINARY) and os.access(BINARY, os.X_OK)),
@@ -108,3 +109,22 @@ def test_cover_stream_flags_exist(tmp_path, source):
     missing = [f for f in sorted(flags(cmd)) if f not in help_text]
     assert not missing, f"cortrace-cov no longer has: {missing}"
     assert "--cov-lag" in cmd and "--checkpoint-secs" in cmd
+
+
+@pytest.mark.skipif(
+    not (os.path.isfile(PROF_BINARY) and os.access(PROF_BINARY, os.X_OK)),
+    reason="cortrace-prof not built",
+)
+def test_profile_run_flags_exist(tmp_path):
+    """`cortrace profile run` runs cortrace-prof with these options."""
+    out = subprocess.run(
+        [PROF_BINARY, "--help"], capture_output=True, text=True, check=False
+    )
+    help_text = out.stdout + out.stderr
+    a = prof.parse_run_args(
+        ["--out-dir", str(tmp_path), "--elf", "e", "--raw-in", "r", "--phase", "1,0"]
+        + ["--sysclk-hz", "150e6", "--tsgen-hz", "75e6", "--period-cycles", "1500000"]
+    )
+    cmd = prof.prof_command(a, "raw", "syms.nm", "out.json")
+    missing = [f for f in sorted(flags(cmd)) if f not in help_text]
+    assert not missing, f"cortrace-prof no longer has: {missing}"

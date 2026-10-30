@@ -4,6 +4,7 @@
 #   bin/cortrace            Python entry point (runs the cortrace package)
 #   bin/cortrace-decode     ETM/DWT/ITM decoder (OpenCSD linked in statically)
 #   bin/cortrace-cov        live code coverage for long captures (same OpenCSD)
+#   bin/cortrace-prof       cycle-accurate profile from the ETM cycle counts (same OpenCSD)
 #   bin/cortrace-grab       FPGA UDP capture helper
 #   lib/python3/dist-packages/cortrace/   the Python package
 #   share/doc/cortrace/     README, licences
@@ -22,6 +23,9 @@ if(CORTRACE_HAVE_OPENCSD AND TARGET cortrace-decode)
 endif()
 if(CORTRACE_HAVE_OPENCSD AND TARGET cortrace-cov)
     install(TARGETS cortrace-cov RUNTIME DESTINATION bin)
+endif()
+if(CORTRACE_HAVE_OPENCSD AND TARGET cortrace-prof)
+    install(TARGETS cortrace-prof RUNTIME DESTINATION bin)
 endif()
 install(PROGRAMS ${CMAKE_SOURCE_DIR}/python/bin/cortrace DESTINATION bin)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/python/cortrace
