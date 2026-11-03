@@ -77,73 +77,71 @@ value = 0xA
 # TRACE_CLK comes from CSTRACE_CLK_ROOT (root 6, SYS_PLL2 528 MHz in the SDK clock
 # setup, divided by 4 = 132 MHz). The pin clock is half the root clock (scope: 65.8
 # MHz at a 132 MHz root, 45 MHz at 88 MHz). The datasheet's limit for the trace
-# clock pad is 70 MHz. Divide by 6 = 88 MHz root, 44 MHz pin.
-# CONTROL: MUX [10:8] = 7 (SYS_PLL2), DIV [7:0] = 5.
+# clock pad is 70 MHz. Divide by 5 = 105.6 MHz root, 52.8 MHz pin.
+# CONTROL: MUX [10:8] = 7 (SYS_PLL2), DIV [7:0] = 4.
 #
-# What the FPGA could decode at each pin clock (cachecliff, EVK, clock pad 0x2,
-# data pads 0x3, 0.05 s captures; "clean" = no decode errors, addr-nacc = 0):
-#   33 MHz  clean for every IDELAY tap 0..31
-#   38 MHz  clean for every tap
-#   44 MHz  clean for taps 12..18 (tap 15 is the middle)
-#   53 MHz  not clean at any tap (slow data pads 0x2 + tap 31 come closest)
-#   66 MHz  nothing decodes
-# Higher clocks need the sampling point moved by more than the 2.4 ns of IDELAY.
-# With the MMCM sampling-clock bitstream (cortrace-fpga docs/03; `cortrace fpga ctrl
-# set-phase`) the pad settings change: clock and data pads both 0x2, DIV = 4 (53
-# MHz) decodes clean for fine phases -90..-50 steps; 44 MHz (clock pad 0x2, data 0x3) for
-# -80..-20; 66 MHz still has no clean phase (the edges fill the 7.6 ns bit).
-# What is left of the decode errors at 44 MHz is the ETM overflowing the port in the
-# timing profile (lost-sync = resync(TraceOn), addr-nacc = 0).
+# This file assumes the FPGA bitstream with the MMCM sampling clock (cortrace-fpga
+# docs/03, built with TRACE_USE_MMCM=1; `cortrace fpga ctrl set-phase -70`). The
+# data changes right after the clock edge, so the sampling point has to move by
+# far more than the 2.4 ns of IDELAY.
+#
+# What decodes at each pin clock (cachecliff, EVK, 0.05 s captures; "clean" =
+# addr-nacc ~ 0, i.e. no sampling errors), clock and data pads 0x2 unless noted:
+#   44 MHz  MMCM: clean for fine phases -80..-20 (clock pad 0x2, data 0x3);
+#           IDELAY only: taps 12..18
+#   53 MHz  MMCM: clean for -90..-50 (centre -70); IDELAY only: no clean tap
+#   66 MHz  no clean phase (the slow edges fill the 7.6 ns bit); IDELAY only: nothing
+# Below about 37 MHz the MMCM bitstream does not lock (VCO range): use the default
+# bitstream there, where every IDELAY tap works at 33 MHz.
+# What is left of the decode errors in the timing profile is the ETM overflowing the
+# port (lost-sync = resync(TraceOn), addr-nacc = 0).
 [[on_trace_start]]
-comment = "CCM CLOCK_ROOT6 (CSTRACE) = SYS_PLL2 / 6"
+comment = "CCM CLOCK_ROOT6 (CSTRACE) = SYS_PLL2 / 5"
 op = "write32"
 addr = 0x40CC0300
-value = 0x705
-
-# Pads: ALT3 = ARM_TRACE. The data pads use fast slew (SRE) and high drive (DSE).
+value = 0x704
+# Pads: ALT3 = ARM_TRACE. Clock and data pads use high drive and slow slew (0x2).
 #
 # The chip changes the data on both edges of TRACE_CLK (double data rate), about
-# 1.5 to 3 ns after each clock edge (scope, EVK, 33 MHz clock). The FPGA samples at
-# the clock edge, so with the fast clock pad it caught the data in transition and
-# the decode lost sync (lost-sync ~190 in 0.3 s at 33 MHz). A slow-slew clock pad
-# (SRE = 0, DSE = 1) moves the clock edge relative to the data: the same capture
-# decodes clean for every IDELAY tap from 0 to 31. A fast, low-drive clock pad
-# (0x1) decodes nothing.
+# 1.5 to 3 ns after each clock edge (scope, EVK, 33 MHz clock). With fast pads the
+# FPGA caught the data in transition at every sampling phase it could reach (53 MHz,
+# fast clock and data pads: no clean phase). Slow pads (SRE = 0, DSE = 1) decode.
+# A fast, low-drive clock pad (0x1) decodes nothing.
 [[on_trace_start]]
-comment = "GPIO_DISP_B2_02 = ARM_TRACE00 (D0), SRE|DSE"
+comment = "GPIO_DISP_B2_02 = ARM_TRACE00 (D0), DSE only (slow slew)"
 op = "write32"
 addr = 0x400E8460
-value = 0x3
+value = 0x2
 [[on_trace_start]]
 comment = "GPIO_DISP_B2_02 mux ALT3"
 op = "write32"
 addr = 0x400E821C
 value = 0x3
 [[on_trace_start]]
-comment = "GPIO_DISP_B2_03 = ARM_TRACE01 (D1), SRE|DSE"
+comment = "GPIO_DISP_B2_03 = ARM_TRACE01 (D1), DSE only (slow slew)"
 op = "write32"
 addr = 0x400E8464
-value = 0x3
+value = 0x2
 [[on_trace_start]]
 comment = "GPIO_DISP_B2_03 mux ALT3"
 op = "write32"
 addr = 0x400E8220
 value = 0x3
 [[on_trace_start]]
-comment = "GPIO_DISP_B2_04 = ARM_TRACE02 (D2), SRE|DSE"
+comment = "GPIO_DISP_B2_04 = ARM_TRACE02 (D2), DSE only (slow slew)"
 op = "write32"
 addr = 0x400E8468
-value = 0x3
+value = 0x2
 [[on_trace_start]]
 comment = "GPIO_DISP_B2_04 mux ALT3"
 op = "write32"
 addr = 0x400E8224
 value = 0x3
 [[on_trace_start]]
-comment = "GPIO_DISP_B2_05 = ARM_TRACE03 (D3), SRE|DSE"
+comment = "GPIO_DISP_B2_05 = ARM_TRACE03 (D3), DSE only (slow slew)"
 op = "write32"
 addr = 0x400E846C
-value = 0x3
+value = 0x2
 [[on_trace_start]]
 comment = "GPIO_DISP_B2_05 mux ALT3"
 op = "write32"
