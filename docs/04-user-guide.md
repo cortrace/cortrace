@@ -572,7 +572,7 @@ flowchart TD
 | `not enough free space in …` | 输出目录所在磁盘放不下，按提示换目录或清理 |
 | `--secs … is longer than 5 s` | 确实要抓更长就加 `--allow-long` |
 | `cortrace-grab failed`，或抓到 0 字节 | 先 `ip -br addr show <nic>`：网口没有 `<HOST_IP>`（重启后 `ip addr add` 会丢，见第 2 节"网口地址"）或是 `NO-CARRIER`；再查 5555 端口是否被上一次没退出的抓取占着：`fuser -k 5555/udp` |
-| 解码摘要里 `lost-sync` / `overflow` 不为 0 | ETM 在片上溢出：降低 CPU 频率、关掉不需要的 note（syscall/heap），或降低 trace 量。note 走 ITM 时也占 TPIU 带宽 |
+| 解码摘要里 `lost-sync` / `overflow` 不为 0 | ETM 在片上溢出：降低 CPU 频率、关掉不需要的 note（syscall/heap），或降低 trace 量。note 走 ITM 时也占 TPIU 带宽。CPU 比 trace 口快得多时，`cortrace arm --etm-stall 3` 让 ETM 的 FIFO 快满时提前拖慢内核，代价是时间被拉长。RT1176（66 MHz 口、4 位）实测每 0.3 s 的重同步次数：CPU 62 MHz 16029→3528，31 MHz 680→5，15.6 MHz 本来就是 0（STALL LEVEL 0→3） |
 | 线程名都是 `tcb@0x…` | 没给 `--probe-telnet`（OS 插件读不到 TCB），或 OpenOCD 没常驻；日志里看 `[cortrace-os] … resolved N of M pointers`。固件没带 `-g` 时会报找不到 TCB 的 DWARF |
 | `warning: no note bytes on ITM port N` | 固件没往这个端口写 note（端口号不对：上游默认 1，Vela 是 0，用 `--itm-port`），或者 ITM 没使能（调试器没武装），或者没开 note 驱动 |
 | `nxtrace merge` 报 `no common offset` 或配上的数量很少 | 硬件和 note 的线程切换对不上：两边不是同一次运行，或丢了 note（看抓取日志里 `itm notes … OVERFLOW`，降低 note 量后重抓），或者 `--freq` 不是给 note 打时间戳的时钟频率 |

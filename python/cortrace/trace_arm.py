@@ -121,12 +121,18 @@ def _etm_wait_idle(regs, base):
 ETM_PROFILES = {"timing": 0x810, "coverage": 0x1}
 
 
-def arm_etm(regs, base, trace_id, profile="timing"):
+def arm_etm(regs, base, trace_id, profile="timing", stall_level=0):
     """Program the ETMv4 for full instruction trace. The timing profile adds
     cycle counts and timestamps (no bandwidth broadcast, so the times are
-    execution times); the coverage profile leaves them out."""
+    execution times); the coverage profile leaves them out.
+
+    `stall_level` (0..3) is TRCSTALLCTLR.LEVEL: how early the ETM stalls the core
+    when its FIFO fills. 0 never slows the core and overflows first; 3 slows the
+    core the most and loses the least trace."""
     if profile not in ETM_PROFILES:
         raise ArmError(f"unknown ETM profile {profile!r} ({', '.join(ETM_PROFILES)})")
+    if not 0 <= stall_level <= 3:
+        raise ArmError(f"ETM stall level {stall_level} not supported (0..3)")
     regs.unlock(base)
     regs.write(base + 0x310, 0x8)  # TRCPDCR: power up
     regs.write(base + 0x004, 0)  # TRCPRGCTLR: off while programming
@@ -134,7 +140,9 @@ def arm_etm(regs, base, trace_id, profile="timing"):
     regs.write(base + 0x010, ETM_PROFILES[profile])  # TRCCONFIGR
     regs.write(base + 0x040, trace_id)  # TRCTRACEIDR
     regs.write(base + 0x038, 0x10)  # TRCCCCTLR: cycle-count threshold
-    regs.write(base + 0x02C, 0x100)  # TRCSTALLCTLR: instruction stall only
+    regs.write(
+        base + 0x02C, 0x100 | stall_level << 2
+    )  # TRCSTALLCTLR: instruction stall
     regs.write(base + 0x080, 0x201)  # TRCVICTLR: trace everything
     regs.write(base + 0x034, 0xC)  # TRCSYNCPR: sync every 4 KiB
     regs.write(base + 0x030, 0)  # TRCTSCTLR: implicit timestamps
@@ -207,6 +215,7 @@ def arm(
     width=4,
     etm=True,
     profile="timing",
+    stall_level=0,
     dwt_events=(),
     log=print,
 ):
@@ -216,6 +225,8 @@ def arm(
         raise ArmError(f"trace width {width} not supported (1..{max_width})")
     if profile not in ETM_PROFILES:  # before the halt: never leave the core stopped
         raise ArmError(f"unknown ETM profile {profile!r} ({', '.join(ETM_PROFILES)})")
+    if not 0 <= stall_level <= 3:
+        raise ArmError(f"ETM stall level {stall_level} not supported (0..3)")
     check_dwt_events(dwt_events)
     regs = Regs(probe)
     blocks = platform["coresight"]
@@ -232,7 +243,7 @@ def arm(
         else:
             arm_etf(regs, stage["base"])
     if etm:
-        arm_etm(regs, blocks["etm"], trace["etm_trace_id"], profile)
+        arm_etm(regs, blocks["etm"], trace["etm_trace_id"], profile, stall_level)
     else:
         hold_etm_off(regs, blocks["etm"])
     arm_itm(regs, blocks["itm"], trace["itm_trace_id"])

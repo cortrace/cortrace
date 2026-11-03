@@ -70,6 +70,16 @@ def build_parser():
         "cover`; the Perfetto time bases need timing) (default: %(default)s)",
     )
     ap.add_argument(
+        "--etm-stall",
+        type=int,
+        choices=range(4),
+        default=0,
+        metavar="LEVEL",
+        help="how early the ETM stalls the core when its FIFO fills, 0..3. 0 leaves "
+        "the core alone and loses trace first; 3 slows the core the most and loses "
+        "the least. For a core that outruns the trace port (default: %(default)s)",
+    )
+    ap.add_argument(
         "--dwt-events",
         type=_dwt_events,
         default=(),
@@ -132,6 +142,7 @@ def main(argv=None):
             width=args.width,
             etm=not args.no_etm,
             profile=args.profile,
+            stall_level=args.etm_stall,
             dwt_events=args.dwt_events,
             log=log,
         )

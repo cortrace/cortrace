@@ -104,6 +104,19 @@ def test_coverage_profile_drops_cycle_counts_and_timestamps(plat):
         trace_arm.arm_etm(trace_arm.Regs(probe), 0xE0041000, 2, "fast")
 
 
+def test_etm_stall_level_goes_into_trcstallctlr(plat):
+    probe = FakeProbe({0xE004100C: 1})
+    trace_arm.arm(probe, plat, [], log=lambda _m: None)
+    assert order(probe, 0xE004102C) == [0x100]  # the default never slows the core more
+    probe = FakeProbe({0xE004100C: 1})
+    trace_arm.arm(probe, plat, [], stall_level=3, log=lambda _m: None)
+    assert order(probe, 0xE004102C) == [0x10C]
+    probe = FakeProbe()
+    with pytest.raises(ArmError, match="stall level"):
+        trace_arm.arm(probe, plat, [], stall_level=4, log=lambda _m: None)
+    assert not probe.writes and not probe.events  # refused before the halt
+
+
 def test_comparators_that_are_not_used_are_switched_off(plat):
     """A comparator armed by an earlier session must not keep emitting."""
     probe = FakeProbe({0xE0001038: 0xD, 0xE0001048: 0xD})
