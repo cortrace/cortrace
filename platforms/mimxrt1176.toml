@@ -77,11 +77,13 @@ value = 0xA
 # TRACE_CLK comes from CSTRACE_CLK_ROOT (root 6, SYS_PLL2 528 MHz in the SDK clock
 # setup, divided by 4 = 132 MHz). The pin clock is half the root clock (scope: 65.8
 # MHz at a 132 MHz root, 45 MHz at 88 MHz). The datasheet's limit for the trace
-# clock pad is 70 MHz. Divide by 5 = 105.6 MHz root, 52.8 MHz pin.
+# clock pad is 70 MHz. This file keeps the SDK value (divide by 4), so the trace clock
+# does not change when the application runs BOARD_BootClockRUN; divide by 5 gives
+# 105.6 MHz root, 52.8 MHz pin (CONTROL = 0x704).
 # CONTROL: MUX [10:8] = 7 (SYS_PLL2), DIV [7:0] = 4.
 #
 # This file assumes the FPGA bitstream with the MMCM sampling clock (cortrace-fpga
-# docs/03, built with TRACE_USE_MMCM=1; `cortrace fpga ctrl set-phase`: -110 at 53 MHz, -80 at 66 MHz on cable B). The
+# docs/03, built with TRACE_USE_MMCM=1; `cortrace fpga ctrl set-phase`: -110 at 53 MHz, -44 at 66 MHz with `cortrace fpga ctrl calibrate`, window -95..7, on cable B). The
 # data changes right after the clock edge, so the sampling point has to move by
 # far more than the 2.4 ns of IDELAY.
 #
@@ -100,10 +102,10 @@ value = 0xA
 # What is left of the decode errors in the timing profile is the ETM overflowing the
 # port (lost-sync = resync(TraceOn), addr-nacc = 0).
 [[on_trace_start]]
-comment = "CCM CLOCK_ROOT6 (CSTRACE) = SYS_PLL2 / 5"
+comment = "CCM CLOCK_ROOT6 (CSTRACE) = SYS_PLL2 / 4, the SDK value (66 MHz pin clock)"
 op = "write32"
 addr = 0x40CC0300
-value = 0x704
+value = 0x703
 # Pads: ALT3 = ARM_TRACE. Clock and data pads use high drive and slow slew (0x2).
 #
 # The chip changes the data on both edges of TRACE_CLK (double data rate), about
