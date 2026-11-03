@@ -119,6 +119,13 @@ def test_set_phase_rejects_out_of_range(fpga, value):
     assert fpga.csr_writes == []
 
 
+@pytest.mark.parametrize("mode,value", [("direct", 0), ("mmcm", 1)])
+def test_set_mode_writes_the_source_then_rearms(fpga, mode, value, capsys):
+    assert run(["set-mode", mode]) == 0
+    assert fpga.csr_writes == [(ctrl.REG_CLK_SEL, value), (ctrl.REG_REARM, 1)]
+    assert f"sampling clock = {mode}" in capsys.readouterr().out
+
+
 def test_relock_writes_the_relock_register(fpga):
     assert run(["relock"]) == 0
     assert fpga.csr_writes == [(ctrl.REG_MM_RELOCK, 1)]

@@ -7,6 +7,7 @@ CSR map (fpga_core_net control port, doc 15):
   0x06  IDELAY tap of one lane: {lane[6:5], tap[4:0]}
   0x14/0x15  MMCM sampling clock fine phase (signed 10 bit, VCO/56 steps; low
         byte first, applied by the 0x15 write), 0x16 reset the MMCM
+  0x17  sampling clock source of a dual build: 0 TRACECLK direct, 1 MMCM
   0x08  TPIU port width: 4, 2 or 1 bit -- runtime, so ONE bitstream serves all
         three widths (readback at DEPTH+33)
   0x09  stream selftest ramp   0x0B  fixed 0x42 source
@@ -51,6 +52,7 @@ REG_MM_PHASE_HI = 0x15  # bits 9:8; this write applies the target
 REG_MM_RELOCK = 0x16  # any write resets the sampling MMCM
 MM_MAX_STEPS = 255  # the RTL clamps to this
 MM_STEPS_PER_VCO = 56  # one step = 1/56 of the VCO period
+REG_CLK_SEL = 0x17  # dual build: 0 = TRACECLK direct (IDELAY), 1 = MMCM
 REG_WIDTH = 0x08  # TPIU parallel port width: 4, 2 or 1 (runtime, no reflash)
 REG_STREAM_SELFTEST = 0x09  # 1=stream FPGA-side byte ramp instead of real trace
 REG_IDDR_PRBS = 0x0D  # 1=push a trace_clk-domain xorshift32 PRBS through the
@@ -193,6 +195,13 @@ def main(argv=None):  # pylint: disable=too-many-statements
     )
     pm.add_argument("--no-wait", action="store_true")
     sub.add_parser("relock", help="reset the sampling MMCM (lock again)")
+    pc = sub.add_parser(
+        "set-mode",
+        help="sampling clock of a dual bitstream (feature 'selectable sampling "
+        "clock'): direct = TRACECLK through a global buffer, tuned with set-tap; "
+        "mmcm = the MMCM, tuned with set-phase. Re-arms the capture.",
+    )
+    pc.add_argument("mode", choices=("direct", "mmcm"))
     sub.add_parser("rearm")
     a = ap.parse_args(argv)
     if a.cmd == "set-phase" and abs(a.value) > MM_MAX_STEPS:
@@ -243,6 +252,10 @@ def main(argv=None):  # pylint: disable=too-many-statements
         write_csr(a.ip, REG_MM_PHASE_LO, raw & 0xFF)
         write_csr(a.ip, REG_MM_PHASE_HI, raw >> 8)
         return _finish_set_phase(a)
+    elif a.cmd == "set-mode":
+        write_csr(a.ip, REG_CLK_SEL, 1 if a.mode == "mmcm" else 0)
+        write_csr(a.ip, REG_REARM, 1)
+        print(f"sampling clock = {a.mode}, capture re-armed")
     elif a.cmd == "relock":
         write_csr(a.ip, REG_MM_RELOCK, 1)
         print("sampling MMCM reset requested")

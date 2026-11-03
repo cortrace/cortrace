@@ -80,7 +80,9 @@ A_RING_MAGIC = 0xFF50  # 0xD1 on the DDR-ring capture design
 A_MM_STATUS = 0xFF95  # {.., ps timeout, busy, locked} of the sampling MMCM
 A_MM_PHASE = 0xFF96  # reached fine phase, signed 10 bit LE (2 bytes)
 A_MM_LOST = 0xFF98  # lock-loss count (saturating)
+A_CLK_SEL = 0xFF99  # sampling clock in use: 1 = MMCM, 0 = TRACECLK direct
 FEATURE_MMCM = 6
+FEATURE_DUAL = 7
 FEATURE_NAMES = {
     0: "pin monitors",  # TRACECLK activity / pin edges / frequency / gaps
     1: "DDR3 ring",
@@ -89,6 +91,7 @@ FEATURE_NAMES = {
     4: "clearable errors",  # CSR 0x10 clears the sticky error and counters
     5: "run-time IDELAY tap",  # CSR 0x05/0x06 move the sampling point per lane
     6: "MMCM sampling clock",  # CSR 0x14..0x16: run-time fine phase of the clock
+    7: "selectable sampling clock",  # CSR 0x17: TRACECLK direct or the MMCM
 }
 FLAG_DIRTY, FLAG_PRERELEASE, FLAG_UNTAGGED = 1, 2, 4
 EARLIEST_BUILD = 1_577_836_800  # 2020-01-01; anything older is not a real stamp
@@ -125,6 +128,7 @@ class Identity:  # pylint: disable=too-few-public-methods
             self.git = f"{le(A_GIT, 4):08x}"
             self.features = rd8(s, A_FEATURES)
         self.mmcm = bool(self.features and self.features >> FEATURE_MMCM & 1)
+        self.dual = bool(self.features and self.features >> FEATURE_DUAL & 1)
         ring_design = rd8(s, A_RING_MAGIC) == 0xD1
         if self.features is None:
             # Older DDR-ring bitstreams tie the pin monitors off to constant 0.
@@ -479,11 +483,17 @@ def health_check(
     print(f"       self-TX FSM = {FSM_NAMES.get(fsm, fsm)}  pkt_active={pkt_active}")
     if ident.mmcm:
         locked, busy, timeout, phase, lost = mmcm_status(s)
+        use_mmcm = bool(rd8(s, A_CLK_SEL) & 1) if ident.dual else True
+        if ident.dual:
+            print(
+                "       sampling clock = "
+                + ("MMCM" if use_mmcm else "TRACECLK direct (IDELAY tap only)")
+            )
         print(
             f"       sampling MMCM locked={int(locked)}  fine phase={phase:+d} steps"
             f"{' (moving)' if busy else ''}  lock losses={lost}"
         )
-        if not locked:
+        if not locked and use_mmcm:
             print(
                 "[WARN] sampling MMCM not locked: no TRACECLK, or its frequency is "
                 "outside the range this bitstream was built for"

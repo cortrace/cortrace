@@ -157,6 +157,24 @@ def test_mmcm_feature_prints_lock_phase_and_lock_losses(board, capsys):
     assert "[WARN] sampling MMCM" not in out
 
 
+def test_dual_build_names_the_clock_in_use(board, capsys):
+    mem, _ = board
+    healthy(mem)
+    stamp(mem, features=0b1111_1110)  # bit7: selectable sampling clock
+    put(mem, health.A_MM_STATUS, 0b000)  # MMCM not locked, but not in use
+    put(mem, health.A_CLK_SEL, 0)
+    assert run() == 0
+    out = capsys.readouterr().out
+    assert "selectable sampling clock" in out
+    assert "sampling clock = TRACECLK direct" in out
+    assert "[WARN] sampling MMCM not locked" not in out
+    put(mem, health.A_CLK_SEL, 1)
+    assert run() == 0
+    out = capsys.readouterr().out
+    assert "sampling clock = MMCM" in out
+    assert "[WARN] sampling MMCM not locked" in out
+
+
 def test_unlocked_sampling_mmcm_is_a_warning(board, capsys):
     mem, _ = board
     healthy(mem)
