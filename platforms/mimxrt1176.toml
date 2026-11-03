@@ -81,18 +81,22 @@ value = 0xA
 # CONTROL: MUX [10:8] = 7 (SYS_PLL2), DIV [7:0] = 4.
 #
 # This file assumes the FPGA bitstream with the MMCM sampling clock (cortrace-fpga
-# docs/03, built with TRACE_USE_MMCM=1; `cortrace fpga ctrl set-phase -70`). The
+# docs/03, built with TRACE_USE_MMCM=1; `cortrace fpga ctrl set-phase`: -110 at 53 MHz, -80 at 66 MHz on cable B). The
 # data changes right after the clock edge, so the sampling point has to move by
 # far more than the 2.4 ns of IDELAY.
 #
-# What decodes at each pin clock (cachecliff, EVK, 0.05 s captures; "clean" =
-# addr-nacc ~ 0, i.e. no sampling errors), clock and data pads 0x2 unless noted:
-#   44 MHz  MMCM: clean for fine phases -80..-20 (clock pad 0x2, data 0x3);
-#           IDELAY only: taps 12..18
-#   53 MHz  MMCM: clean for -90..-50 (centre -70); IDELAY only: no clean tap
-#   66 MHz  no clean phase (the slow edges fill the 7.6 ns bit); IDELAY only: nothing
-# Below about 37 MHz the MMCM bitstream does not lock (VCO range): use the default
-# bitstream there, where every IDELAY tap works at 33 MHz.
+# What decodes at each pin clock (cachecliff, EVK, 0.05 s captures; "clean" = no
+# sampling errors: addr-nacc and lost-sync beyond resync(TraceOn) both 0). Clock and
+# data pads 0x2, MMCM bitstream with M = 14:
+#   44 MHz  clean for fine phases -150..-30 (cable B)
+#   53 MHz  cable A (flying leads): no clean phase, addr-nacc 55..137 per 0.3 s;
+#           cable B (33 ohm in R1881..R1885, spare cable pins grounded): clean for
+#           -190..-30, about 4 ns wide
+#   66 MHz  cable A: nothing; cable B: clean for -110..-50 (about 1.3 ns); pads 0x3
+#           are worse
+# Without the MMCM bitstream (IDELAY only), 53 MHz has no clean tap on cable A; cable B
+# was not tried with it. Below about 43 MHz the MMCM bitstream does not lock (VCO
+# range): use the default bitstream there.
 # What is left of the decode errors in the timing profile is the ETM overflowing the
 # port (lost-sync = resync(TraceOn), addr-nacc = 0).
 [[on_trace_start]]
