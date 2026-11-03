@@ -1,7 +1,7 @@
 import pytest
 from fakefpga import FakeFpga
 
-from cortrace.fpga import ctrl
+from cortrace.fpga import ctrl, health
 
 
 @pytest.fixture
@@ -55,6 +55,73 @@ def test_set_tap_rejects_out_of_range(fpga, args):
     with pytest.raises(SystemExit):
         run(args)
     assert fpga.csr_writes == []
+
+
+def _mmcm_at(fpga, phase, flags=0b001):
+    fpga.mem[health.A_MM_STATUS] = flags
+    raw = phase & 0x3FF
+    fpga.mem[health.A_MM_PHASE] = raw & 0xFF
+    fpga.mem[health.A_MM_PHASE + 1] = raw >> 8
+
+
+def test_set_phase_writes_low_then_high_then_rearms(fpga, monkeypatch, capsys):
+    monkeypatch.setattr(health, "PORT", fpga.readout_port)
+    _mmcm_at(fpga, -120)
+    assert run(["set-phase", "-120"]) == 0
+    assert fpga.csr_writes == [
+        (ctrl.REG_MM_PHASE_LO, 0x88),
+        (ctrl.REG_MM_PHASE_HI, 0x03),
+        (ctrl.REG_REARM, 1),
+    ]
+    assert "fine phase = -120 steps" in capsys.readouterr().out
+
+
+def test_set_phase_prints_the_step_size_when_the_clock_is_given(
+    fpga, monkeypatch, capsys
+):
+    monkeypatch.setattr(health, "PORT", fpga.readout_port)
+    _mmcm_at(fpga, 100)
+    assert run(["set-phase", "100", "--pin-mhz", "44"]) == 0
+    # 56 steps per VCO period, VCO = 16 x 44 MHz
+    assert "~+2537 ps at 44 MHz, 25.4 ps/step" in capsys.readouterr().out
+
+
+def test_set_phase_fails_when_the_mmcm_never_gets_there(fpga, monkeypatch, capsys):
+    monkeypatch.setattr(health, "PORT", fpga.readout_port)
+    monkeypatch.setattr(ctrl.time, "sleep", lambda _s: None)
+    ticks = iter(range(0, 1000, 1))
+    monkeypatch.setattr(ctrl.time, "monotonic", lambda: next(ticks) * 0.5)
+    _mmcm_at(fpga, 3)
+    assert run(["set-phase", "10"]) == 1
+    assert "is +3, wanted +10" in capsys.readouterr().out
+
+
+def test_set_phase_reports_an_unlocked_mmcm(fpga, monkeypatch, capsys):
+    monkeypatch.setattr(health, "PORT", fpga.readout_port)
+    monkeypatch.setattr(ctrl.time, "sleep", lambda _s: None)
+    ticks = iter(range(0, 1000, 1))
+    monkeypatch.setattr(ctrl.time, "monotonic", lambda: next(ticks) * 0.5)
+    _mmcm_at(fpga, 0, flags=0)
+    assert run(["set-phase", "5"]) == 1
+    assert "not locked" in capsys.readouterr().out
+
+
+def test_set_phase_no_wait_only_writes(fpga, capsys):
+    assert run(["set-phase", "7", "--no-wait"]) == 0
+    assert fpga.csr_writes == [(ctrl.REG_MM_PHASE_LO, 7), (ctrl.REG_MM_PHASE_HI, 0)]
+    assert "target = +7 steps" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["256", "-256"])
+def test_set_phase_rejects_out_of_range(fpga, value):
+    with pytest.raises(SystemExit):
+        run(["set-phase", value])
+    assert fpga.csr_writes == []
+
+
+def test_relock_writes_the_relock_register(fpga):
+    assert run(["relock"]) == 0
+    assert fpga.csr_writes == [(ctrl.REG_MM_RELOCK, 1)]
 
 
 def test_set_bitlen_splits_into_lo_and_hi(fpga):

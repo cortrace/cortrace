@@ -5,6 +5,8 @@ CSR map (fpga_core_net control port, doc 15):
   0x03/04 SWO bit length lo/hi
   0x05  IDELAY tap, all four data lanes (0..31, ~78 ps each; power-on 16)
   0x06  IDELAY tap of one lane: {lane[6:5], tap[4:0]}
+  0x14/0x15  MMCM sampling clock fine phase (signed 10 bit, VCO/56 steps; low
+        byte first, applied by the 0x15 write), 0x16 reset the MMCM
   0x08  TPIU port width: 4, 2 or 1 bit -- runtime, so ONE bitstream serves all
         three widths (readback at DEPTH+33)
   0x09  stream selftest ramp   0x0B  fixed 0x42 source
@@ -14,6 +16,10 @@ The data lanes go through an IDELAYE2 in front of the IDDR (bitstream feature
 point inside the data eye. Bitstreams older than cortrace-fpga 1.1.0 have no
 delay element and ignore 0x05/0x06.
 
+Bitstreams built with TRACE_USE_MMCM=1 (feature "MMCM sampling clock") clock the
+IDDRs from an MMCM; `set-phase` moves that clock in 1/56 VCO-period steps, which
+reaches far beyond the 2.4 ns of IDELAY.
+
 Request payload = {reg_addr(1B), reg_value(1B)} (+pad); the FPGA latches both
 and pulses csr_we at end-of-frame.
 
@@ -21,11 +27,14 @@ Usage:
   cortrace fpga ctrl --ip 192.168.10.42 set-width 4
   cortrace fpga ctrl --ip 192.168.10.42 set-tap 16
   cortrace fpga ctrl --ip 192.168.10.42 set-tap 12 --lane 2
+  cortrace fpga ctrl --ip 192.168.10.42 set-phase -120
+  cortrace fpga ctrl --ip 192.168.10.42 relock
   cortrace fpga ctrl --ip 192.168.10.42 rearm
 """
 
 import argparse
 import socket
+import time
 
 from . import net as fpga_net
 
@@ -37,6 +46,11 @@ REG_BITLEN_HI = 0x04
 REG_IDELAY_ALL = 0x05  # IDELAY tap of all four data lanes, 0..31
 REG_IDELAY_LANE = 0x06  # IDELAY tap of one lane: {lane[6:5], tap[4:0]}
 IDELAY_STEP_PS = 78.125  # one tap at the 200 MHz IDELAYCTRL reference
+REG_MM_PHASE_LO = 0x14  # MMCM fine phase target, low 8 bits (latched)
+REG_MM_PHASE_HI = 0x15  # bits 9:8; this write applies the target
+REG_MM_RELOCK = 0x16  # any write resets the sampling MMCM
+MM_MAX_STEPS = 255  # the RTL clamps to this
+MM_STEPS_PER_VCO = 56  # one step = 1/56 of the VCO period
 REG_WIDTH = 0x08  # TPIU parallel port width: 4, 2 or 1 (runtime, no reflash)
 REG_STREAM_SELFTEST = 0x09  # 1=stream FPGA-side byte ramp instead of real trace
 REG_IDDR_PRBS = 0x0D  # 1=push a trace_clk-domain xorshift32 PRBS through the
@@ -67,7 +81,49 @@ def write_csr(ip, addr, value, timeout=1.0, iface=None):
     s.close()
 
 
-def main(argv=None):
+def _finish_set_phase(a, timeout_s=3.0):
+    """Wait for the MMCM to reach the phase, re-arm, and report."""
+    from . import health  # pylint: disable=import-outside-toplevel
+
+    step = ""
+    if a.pin_mhz:
+        ps = 1e6 / (MM_STEPS_PER_VCO * a.pin_mhz * a.mmcm_mult)
+        step = f" (~{a.value * ps:+.0f} ps at {a.pin_mhz:g} MHz, {ps:.1f} ps/step)"
+    if a.no_wait:
+        print(f"MMCM fine phase target = {a.value:+d} steps{step}")
+        return 0
+    deadline = time.monotonic() + timeout_s
+    status = None
+    while time.monotonic() < deadline:
+        try:
+            status = health.read_mmcm_status(a.ip)
+        except socket.timeout:
+            status = None
+        if status and not status[1] and status[3] == a.value:
+            break
+        time.sleep(0.05)
+    if status is None:
+        print("no answer on :5001 (is this an MMCM bitstream?)")
+        return 1
+    locked, _, timeout, phase, _ = status
+    if not locked:
+        print(
+            "sampling MMCM is not locked: no TRACECLK, or the frequency is out of range"
+        )
+        return 1
+    if timeout:
+        print("the MMCM did not answer a phase step")
+        return 1
+    if phase != a.value:
+        print(f"MMCM fine phase is {phase:+d}, wanted {a.value:+d}")
+        return 1
+    # the sampling clock moved while data was flowing; re-arm for a clean capture
+    write_csr(a.ip, REG_REARM, 1)
+    print(f"MMCM fine phase = {phase:+d} steps{step}, capture re-armed")
+    return 0
+
+
+def main(argv=None):  # pylint: disable=too-many-statements
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--ip",
@@ -117,8 +173,30 @@ def main(argv=None):
         "IDDR primitive)",
     )
     pp.add_argument("value", type=int, choices=(0, 1))
+    pm = sub.add_parser(
+        "set-phase",
+        help="fine phase of the MMCM sampling clock (bitstreams with the MMCM "
+        "feature), in VCO/56 steps, -255..255; waits until the MMCM got there",
+    )
+    pm.add_argument("value", type=int, metavar="-255..255")
+    pm.add_argument(
+        "--pin-mhz",
+        type=float,
+        default=None,
+        help="TRACECLK in MHz, only to print the step in ps",
+    )
+    pm.add_argument(
+        "--mmcm-mult",
+        type=int,
+        default=16,
+        help="VCO multiplier the bitstream was built with (default: %(default)s)",
+    )
+    pm.add_argument("--no-wait", action="store_true")
+    sub.add_parser("relock", help="reset the sampling MMCM (lock again)")
     sub.add_parser("rearm")
     a = ap.parse_args(argv)
+    if a.cmd == "set-phase" and abs(a.value) > MM_MAX_STEPS:
+        ap.error(f"set-phase: {a.value} is outside -{MM_MAX_STEPS}..{MM_MAX_STEPS}")
 
     global _IFACE  # pylint: disable=global-statement
     ip = a.ip
@@ -160,6 +238,14 @@ def main(argv=None):
             f"IDELAY tap = {a.value} (~{a.value * IDELAY_STEP_PS:.0f} ps) on {where}, "
             "capture re-armed"
         )
+    elif a.cmd == "set-phase":
+        raw = a.value & 0x3FF
+        write_csr(a.ip, REG_MM_PHASE_LO, raw & 0xFF)
+        write_csr(a.ip, REG_MM_PHASE_HI, raw >> 8)
+        return _finish_set_phase(a)
+    elif a.cmd == "relock":
+        write_csr(a.ip, REG_MM_RELOCK, 1)
+        print("sampling MMCM reset requested")
     elif a.cmd == "stream-selftest":
         write_csr(a.ip, REG_STREAM_SELFTEST, a.value)
         print(

@@ -143,6 +143,39 @@ def test_idelay_feature_bit_is_named(board, capsys):
     assert "run-time IDELAY tap" in capsys.readouterr().out
 
 
+def test_mmcm_feature_prints_lock_phase_and_lock_losses(board, capsys):
+    mem, _ = board
+    healthy(mem)
+    stamp(mem, features=0b111_1110)  # bit6: MMCM sampling clock
+    put(mem, health.A_MM_STATUS, 0b001)  # locked, idle
+    put(mem, health.A_MM_PHASE, (-120) & 0x3FF, 2)
+    put(mem, health.A_MM_LOST, 3)
+    assert run() == 0
+    out = capsys.readouterr().out
+    assert "MMCM sampling clock" in out
+    assert "sampling MMCM locked=1  fine phase=-120 steps  lock losses=3" in out
+    assert "[WARN] sampling MMCM" not in out
+
+
+def test_unlocked_sampling_mmcm_is_a_warning(board, capsys):
+    mem, _ = board
+    healthy(mem)
+    stamp(mem, features=0b111_1110)
+    put(mem, health.A_MM_STATUS, 0b110)  # not locked, busy, PSDONE timeout
+    assert run() == 0
+    out = capsys.readouterr().out
+    assert "locked=0" in out and "(moving)" in out
+    assert "[WARN] sampling MMCM not locked" in out and "PSDONE" in out
+
+
+def test_bitstream_without_the_mmcm_feature_prints_no_mmcm_line(board, capsys):
+    mem, _ = board
+    healthy(mem)
+    stamp(mem, features=0b11_1110)
+    assert run() == 0
+    assert "sampling MMCM" not in capsys.readouterr().out
+
+
 def test_bitstream_without_pin_monitors_is_not_judged_on_them(board, capsys):
     """The DDR-ring bitstream ties TRACECLK/GPIO/gap monitors to constants."""
     mem, _ = board

@@ -77,6 +77,10 @@ A_FEATURES = 0xFF7C  # bitmap of what this bitstream implements
 A_ID_MARK = 0xFF7E  # 0xFA when the version block below is present
 ID_MARK = 0xFA
 A_RING_MAGIC = 0xFF50  # 0xD1 on the DDR-ring capture design
+A_MM_STATUS = 0xFF95  # {.., ps timeout, busy, locked} of the sampling MMCM
+A_MM_PHASE = 0xFF96  # reached fine phase, signed 10 bit LE (2 bytes)
+A_MM_LOST = 0xFF98  # lock-loss count (saturating)
+FEATURE_MMCM = 6
 FEATURE_NAMES = {
     0: "pin monitors",  # TRACECLK activity / pin edges / frequency / gaps
     1: "DDR3 ring",
@@ -84,6 +88,7 @@ FEATURE_NAMES = {
     3: "run-time port width",
     4: "clearable errors",  # CSR 0x10 clears the sticky error and counters
     5: "run-time IDELAY tap",  # CSR 0x05/0x06 move the sampling point per lane
+    6: "MMCM sampling clock",  # CSR 0x14..0x16: run-time fine phase of the clock
 }
 FLAG_DIRTY, FLAG_PRERELEASE, FLAG_UNTAGGED = 1, 2, 4
 EARLIEST_BUILD = 1_577_836_800  # 2020-01-01; anything older is not a real stamp
@@ -119,6 +124,7 @@ class Identity:  # pylint: disable=too-few-public-methods
             self.version = f"{major}.{minor}.{patch}"
             self.git = f"{le(A_GIT, 4):08x}"
             self.features = rd8(s, A_FEATURES)
+        self.mmcm = bool(self.features and self.features >> FEATURE_MMCM & 1)
         ring_design = rd8(s, A_RING_MAGIC) == 0xD1
         if self.features is None:
             # Older DDR-ring bitstreams tie the pin monitors off to constant 0.
@@ -193,6 +199,27 @@ def rd(s, base, n):
 
 def rd8(s, addr):
     return rd(s, addr, 1)[0]
+
+
+def mmcm_status(s):
+    """State of the sampling MMCM: (locked, busy, ps_timeout, phase_steps,
+    lock_losses). Only meaningful on bitstreams with the MMCM feature."""
+    flags = rd8(s, A_MM_STATUS)
+    raw = int.from_bytes(rd(s, A_MM_PHASE, 2), "little") & 0x3FF
+    phase = raw - 0x400 if raw & 0x200 else raw
+    return bool(flags & 1), bool(flags & 2), bool(flags & 4), phase, rd8(s, A_MM_LOST)
+
+
+def read_mmcm_status(ip):
+    """mmcm_status() over a fresh socket; for `cortrace fpga ctrl`."""
+    global IP  # pylint: disable=global-statement
+    IP = ip
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(1.0)
+    try:
+        return mmcm_status(s)
+    finally:
+        s.close()
 
 
 def ddr3_check(ip):
@@ -450,6 +477,19 @@ def health_check(
     else:
         print(f"       sys MMCM lock={sys_lock}  DDR3 calibrated={trace_lock}")
     print(f"       self-TX FSM = {FSM_NAMES.get(fsm, fsm)}  pkt_active={pkt_active}")
+    if ident.mmcm:
+        locked, busy, timeout, phase, lost = mmcm_status(s)
+        print(
+            f"       sampling MMCM locked={int(locked)}  fine phase={phase:+d} steps"
+            f"{' (moving)' if busy else ''}  lock losses={lost}"
+        )
+        if not locked:
+            print(
+                "[WARN] sampling MMCM not locked: no TRACECLK, or its frequency is "
+                "outside the range this bitstream was built for"
+            )
+        if timeout:
+            print("[WARN] the sampling MMCM did not answer a phase step (PSDONE)")
     if not sys_lock:
         print("[FAIL] system MMCM not locked — FPGA clocking broken")
     if not ident.pin_monitors:
