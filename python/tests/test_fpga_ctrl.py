@@ -82,8 +82,8 @@ def test_set_phase_prints_the_step_size_when_the_clock_is_given(
     monkeypatch.setattr(health, "PORT", fpga.readout_port)
     _mmcm_at(fpga, 100)
     assert run(["set-phase", "100", "--pin-mhz", "44"]) == 0
-    # 56 steps per VCO period, VCO = 16 x 44 MHz
-    assert "~+2537 ps at 44 MHz, 25.4 ps/step" in capsys.readouterr().out
+    # 56 steps per VCO period, VCO = 14 x 44 MHz
+    assert "~+2899 ps at 44 MHz, 29.0 ps/step" in capsys.readouterr().out
 
 
 def test_set_phase_fails_when_the_mmcm_never_gets_there(fpga, monkeypatch, capsys):

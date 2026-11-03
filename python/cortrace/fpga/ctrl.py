@@ -188,7 +188,7 @@ def main(argv=None):  # pylint: disable=too-many-statements
     pm.add_argument(
         "--mmcm-mult",
         type=int,
-        default=16,
+        default=14,
         help="VCO multiplier the bitstream was built with (default: %(default)s)",
     )
     pm.add_argument("--no-wait", action="store_true")
