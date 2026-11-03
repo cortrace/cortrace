@@ -323,7 +323,7 @@ features: DDR3 ring, stream self-test, run-time port width
 | 命令 | 作用 |
 |------|------|
 | `cortrace decode …` | 直接调用 `cortrace-decode`，参数原样透传（离线分析已 deframe 的数据、`--edges` 校验等） |
-| `cortrace fpga ctrl set-width 4` | 设置 FPGA 的 TPIU 位宽并重新武装；还有 `rearm`、`set-bitlen`、`stream-selftest`、`iddr-prbs`；`set-tap N` 调数据脚 IDELAY（0 到 31，约 78 ps 一档）；`set-phase N` 和 `relock` 用于带 MMCM 采样时钟的比特流（`health` 的 features 里有 `MMCM sampling clock`），N 是 -255 到 255 步，每步为 VCO 周期的 1/56 |
+| `cortrace fpga ctrl set-width 4` | 设置 FPGA 的 TPIU 位宽并重新武装；还有 `rearm`、`set-bitlen`、`stream-selftest`、`iddr-prbs`；`set-tap N` 调数据脚 IDELAY（0 到 31，约 78 ps 一档）；`calibrate --elf fw.elf` 自动扫采样旋钮（直采扫 IDELAY tap，MMCM 扫相位），每个设置抓一小段、解码，把干净窗口的中点写进 FPGA（目标要已经 arm 并在跑一段变化的程序；结果记在 `~/.config/cortrace/calibration/<name>.json`，不会自动应用到以后的会话）；`set-mode direct|mmcm` 选双模比特流的采样时钟；`set-phase N` 和 `relock` 用于带 MMCM 采样时钟的比特流（`health` 的 features 里有 `MMCM sampling clock`），N 是 -255 到 255 步，每步为 VCO 周期的 1/56 |
 | `cortrace fpga health [ip] [--check {health,ddr3,blackbox}] [--reset]` | 读 FPGA 的调试寄存器并给出诊断 |
 | `cortrace fpga net` | ARP 探测 FPGA 接在哪个网口（需要 `CAP_NET_RAW`） |
 | `cortrace arm --platform P --elf fw.elf --probe-telnet HOST:PORT` | 通过常驻 OpenOCD 给目标布防 ETM/ITM/DWT；`--list` 列出平台，`--os none` 裸机（不监视变量），`--no-etm` 只布防 ITM/DWT，`--width` 设 TPIU 位宽，`--profile coverage` 只要覆盖率时关掉周期计数和时间戳 |

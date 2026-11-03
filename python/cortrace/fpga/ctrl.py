@@ -35,8 +35,10 @@ Usage:
 
 import argparse
 import socket
+import sys
 import time
 
+from . import calibrate, health
 from . import net as fpga_net
 
 CTRL_PORT = 5002
@@ -85,8 +87,6 @@ def write_csr(ip, addr, value, timeout=1.0, iface=None):
 
 def _finish_set_phase(a, timeout_s=3.0):
     """Wait for the MMCM to reach the phase, re-arm, and report."""
-    from . import health  # pylint: disable=import-outside-toplevel
-
     step = ""
     if a.pin_mhz:
         ps = 1e6 / (MM_STEPS_PER_VCO * a.pin_mhz * a.mmcm_mult)
@@ -202,6 +202,12 @@ def main(argv=None):  # pylint: disable=too-many-statements
         "mmcm = the MMCM, tuned with set-phase. Re-arms the capture.",
     )
     pc.add_argument("mode", choices=("direct", "mmcm"))
+    pcal = sub.add_parser(
+        "calibrate",
+        help="scan the sampling knob (IDELAY tap or MMCM phase), decode the running "
+        "target at each setting and write the middle of the clean window",
+    )
+    calibrate.add_arguments(pcal)
     sub.add_parser("rearm")
     a = ap.parse_args(argv)
     if a.cmd == "set-phase" and abs(a.value) > MM_MAX_STEPS:
@@ -256,6 +262,8 @@ def main(argv=None):  # pylint: disable=too-many-statements
         write_csr(a.ip, REG_CLK_SEL, 1 if a.mode == "mmcm" else 0)
         write_csr(a.ip, REG_REARM, 1)
         print(f"sampling clock = {a.mode}, capture re-armed")
+    elif a.cmd == "calibrate":
+        return calibrate.run(a, a.ip, _IFACE, sys.modules[__name__], health)
     elif a.cmd == "relock":
         write_csr(a.ip, REG_MM_RELOCK, 1)
         print("sampling MMCM reset requested")
