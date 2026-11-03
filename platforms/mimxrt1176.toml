@@ -88,6 +88,10 @@ value = 0xA
 #   53 MHz  not clean at any tap (slow data pads 0x2 + tap 31 come closest)
 #   66 MHz  nothing decodes
 # Higher clocks need the sampling point moved by more than the 2.4 ns of IDELAY.
+# With the MMCM sampling-clock bitstream (cortrace-fpga docs/03; `cortrace fpga ctrl
+# set-phase`) the pad settings change: clock and data pads both 0x2, DIV = 4 (53
+# MHz) decodes clean for fine phases -90..-50 steps; 44 MHz (clock pad 0x2, data 0x3) for
+# -80..-20; 66 MHz still has no clean phase (the edges fill the 7.6 ns bit).
 # What is left of the decode errors at 44 MHz is the ETM overflowing the port in the
 # timing profile (lost-sync = resync(TraceOn), addr-nacc = 0).
 [[on_trace_start]]
