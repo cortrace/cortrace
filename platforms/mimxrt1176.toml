@@ -1,0 +1,146 @@
+# NXP i.MX RT1176, Cortex-M7 core: 4-bit parallel trace on GPIO_DISP_B2_02..06
+# (ARM_TRACE00..03 and ARM_TRACE_CLK, ALT3). Tested on the MIMXRT1170-EVK.
+#
+# Where the blocks are was read off the chip (ROM tables and CoreSight ID registers
+# over SWD), not taken from a manual:
+#   ETM -> M7 funnel (0xE0043000) -> system funnel (0xE00C5000) -> TPIU (0xE00C6000)
+# The system blocks (CTI 0xE00C4000, funnel 0xE00C5000, TPIU 0xE00C6000, timestamp
+# generator 0xE00C7000, SWO 0xE00C8000) are in the core's own memory map. There is
+# no TPIU at 0xE0040000 (it faults) and no ETF in this path.
+#
+# Board notes (MIMXRT1170-EVK, RevC4 schematic; EVKB is the same for these nets):
+#  - The five trace nets reach J58 through R1881..R1885, which are not fitted. Fit
+#    R1881 (D0), R1882 (D1), R1883 (D2), R1884 (D3) on the top side and R1885 (CLK)
+#    on the bottom side.
+#  - The same pads carry the 10/100M Ethernet RMII signals. The PHY (U7, KSZ8081)
+#    drives RXD0, which is the TRACE_CLK net, so it is held in reset below.
+#  - NVCC_DISP2 is 3.3 V, which is what the FPGA input wants.
+name = "mimxrt1176"
+description = "NXP i.MX RT1176 Cortex-M7, parallel trace on GPIO_DISP_B2_02..06"
+core = "cortex-m7"
+
+[coresight]
+etm = 0xE0041000
+dwt = 0xE0001000
+itm = 0xE0000000
+tpiu = 0xE00C6000
+tsgen = 0xE00C7000
+
+# Programmed in this order, sink side first.
+[[coresight.path]]
+kind = "funnel"     # system funnel; all inputs on, the M7 funnel's port is not documented
+base = 0xE00C5000
+ports = 0xFF
+itm_priority = false
+[[coresight.path]]
+kind = "funnel"     # Cortex-M7 funnel: ETM on port 0, ITM/DWT on port 1
+base = 0xE0043000
+ports = 0x3
+
+[trace]
+etm_trace_id = 2
+itm_trace_id = 1
+max_width = 4
+
+[clocks]
+# The timestamp generator counts at 24 MHz (measured against the host clock over
+# SWD: 23.3, 24.8 and 24.0 MHz). The core runs at 996 MHz in the EVK's 1 GHz setup.
+tsgen_hz = 24000000
+sysclk_hz = 996000000
+
+# GPIO_LPSR_10 is JTAG_nTRST on the chip and DMIC_DATA1 on the board, which pulls it
+# low; that stops ETM trace (EVKB HUG, J58 section). Make it a plain GPIO input.
+[[on_trace_start]]
+comment = "IOMUXC_LPSR GPIO_LPSR_10 mux = ALT10 (GPIO12_IO10), off JTAG_nTRST"
+op = "write32"
+addr = 0x40C08028
+value = 0xA
+
+# GPIO_LPSR_12 (JTAG_TDI at reset) is the Ethernet PHY reset (ENET_RST). Drive it
+# low so the PHY lets go of the nets it shares with the trace pins.
+[[on_trace_start]]
+comment = "GPIO12_DR: IO12 low"
+op = "rmw32"
+addr = 0x40C70000
+clear = 0x1000
+[[on_trace_start]]
+comment = "GPIO12_GDIR: IO12 output"
+op = "rmw32"
+addr = 0x40C70004
+set = 0x1000
+[[on_trace_start]]
+comment = "IOMUXC_LPSR GPIO_LPSR_12 mux = ALT10 (GPIO12_IO12): PHY in reset"
+op = "write32"
+addr = 0x40C08030
+value = 0xA
+
+# TRACE_CLK comes from CSTRACE_CLK_ROOT (root 6, SYS_PLL2 528 MHz in the SDK clock
+# setup, divided by 4 = 132 MHz). The pin clock is half the root clock (measured:
+# 32.9 MHz at a 66 MHz root). The datasheet's limit for the trace clock pad is
+# 70 MHz. Divide by 8 = 66 MHz root, 33 MHz pin.
+# CONTROL: MUX [10:8] = 7 (SYS_PLL2), DIV [7:0] = 7.
+[[on_trace_start]]
+comment = "CCM CLOCK_ROOT6 (CSTRACE) = SYS_PLL2 / 8"
+op = "write32"
+addr = 0x40CC0300
+value = 0x707
+
+# Pads: ALT3 = ARM_TRACE. The data pads use fast slew (SRE) and high drive (DSE).
+#
+# The chip changes the data on both edges of TRACE_CLK (double data rate), about
+# 1.5 to 3 ns after each clock edge (scope, EVK, 33 MHz clock). The FPGA samples at
+# the clock edge, so with the fast clock pad it caught the data in transition and
+# the decode lost sync (lost-sync ~190 in 0.3 s). A slow-slew clock pad
+# (SRE = 0, DSE = 1) moves the clock edge relative to the data: the same capture
+# decodes clean for every IDELAY tap from 0 to 31. A fast, low-drive clock pad
+# (0x1) decodes nothing.
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_02 = ARM_TRACE00 (D0), SRE|DSE"
+op = "write32"
+addr = 0x400E8460
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_02 mux ALT3"
+op = "write32"
+addr = 0x400E821C
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_03 = ARM_TRACE01 (D1), SRE|DSE"
+op = "write32"
+addr = 0x400E8464
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_03 mux ALT3"
+op = "write32"
+addr = 0x400E8220
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_04 = ARM_TRACE02 (D2), SRE|DSE"
+op = "write32"
+addr = 0x400E8468
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_04 mux ALT3"
+op = "write32"
+addr = 0x400E8224
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_05 = ARM_TRACE03 (D3), SRE|DSE"
+op = "write32"
+addr = 0x400E846C
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_05 mux ALT3"
+op = "write32"
+addr = 0x400E8228
+value = 0x3
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_06 = ARM_TRACE_CLK, DSE only (slow slew)"
+op = "write32"
+addr = 0x400E8470
+value = 0x2
+[[on_trace_start]]
+comment = "GPIO_DISP_B2_06 mux ALT3"
+op = "write32"
+addr = 0x400E822C
+value = 0x3

@@ -31,7 +31,7 @@ def base_args(*extra):
 def test_list_shows_the_platforms(capsys):
     assert armctl.main(["--list"]) == 0
     names = [line.split("\t")[0] for line in capsys.readouterr().out.splitlines()]
-    assert names == ["s32k344", "stm32h743"]
+    assert names == ["mimxrt1176", "s32k344", "stm32h743"]
 
 
 def test_arms_the_variable_the_os_plugin_names(tmp_path, probe, capsys):
