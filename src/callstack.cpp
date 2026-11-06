@@ -56,10 +56,10 @@ void CallStackMachine::emit(bool begin, const std::string& name)
 }
 
 void CallStackMachine::emit_to(
-    bool begin, const std::string& name, int track, int thread, std::size_t depth)
+    bool begin, const std::string& name, int track, int thread, std::size_t depth, bool truncated)
 {
-    slices_.push_back(
-        { tick_++, last_byte_index_, begin, name, track, last_etm_ts_, cycle_clock_, thread });
+    slices_.push_back({ tick_++, last_byte_index_, begin, name, track, last_etm_ts_, cycle_clock_,
+        thread, losses_, truncated, instr_clock_ + (range_ending_ ? range_instr_ : 0), 0 });
     if (begin) {
         begins_by_fn_[name]++;
         metrics_.begins++;
@@ -72,16 +72,38 @@ void CallStackMachine::emit_to(
         metrics_.max_depth = static_cast<int>(depth);
 }
 
+void CallStackMachine::close_window(uint64_t cycles)
+{
+    // The cycles of this count were spent on the instructions run since the last
+    // one. An event at instruction i of n gets the share i/n.
+    const uint64_t n = instr_clock_ - win_instr_;
+    auto share = [&](uint64_t instr) {
+        const uint64_t i = instr > win_instr_ ? instr - win_instr_ : 0;
+        const uint64_t part = n ? (i < n ? i : n) : n;
+        return win_clock_ + (n ? cycles * part / n : cycles);
+    };
+    for (std::size_t k = win_slice_; k < slices_.size(); ++k)
+        slices_[k].cycle_est = share(slices_[k].instr);
+    for (std::size_t k = win_switch_; k < switches_.size(); ++k)
+        switches_[k].cycle_est = share(switches_[k].instr);
+    win_clock_ += cycles;
+    win_instr_ = instr_clock_;
+    win_slice_ = slices_.size();
+    win_switch_ = switches_.size();
+}
+
 void CallStackMachine::switch_thread(int tid)
 {
     if (tid == cur_thread_)
         return;
+    switches_.push_back({ slices_.size(), last_byte_index_, cycle_clock_, losses_, cur_thread_, tid,
+        instr_clock_, 0 });
     auto& base = ctx_.front().stack;
     if (cur_thread_ == kThreadBoot) {
         // The context that ran before the first switch is not a thread we can
         // name or find again: its frames end where scheduling takes over.
         while (base.size() > 1) {
-            emit_to(false, base.back().fn, ctx_.front().track, kThreadBoot, base.size());
+            emit_to(false, base.back().fn, ctx_.front().track, kThreadBoot, base.size(), true);
             base.pop_back();
         }
     } else {
@@ -175,12 +197,19 @@ void CallStackMachine::process(const Element& e)
     if (e.has_cc)
         cycle_clock_ += e.cycle_count;
 
+    // Counted for the statistics only; the stack logic below keeps its own
+    // notion of a discontinuity (gaps_).
+    if (e.kind == ElementKind::NoSync || e.kind == ElementKind::Overflow
+        || e.kind == ElementKind::TraceOn || e.kind == ElementKind::AddrNacc)
+        ++losses_;
+
     switch (e.kind) {
     case ElementKind::CycleCount:
         // Cycle clock already advanced above; no stack effect.
         break;
 
     case ElementKind::InstrRange: {
+        range_instr_ = e.num_instr;
         const uint32_t start = e.start_addr;
         const uint32_t end = e.end_addr;
         auto& stack = cur().stack;
@@ -277,8 +306,11 @@ void CallStackMachine::process(const Element& e)
             pending_call_ = true;
             pending_ret_ = end;
         } else if (e.is_return() && !reexec) {
+            range_ending_ = true; // the return is the last instruction of the range
             do_return();
         }
+        range_ending_ = false;
+        instr_clock_ += range_instr_;
         cur().last_start = start;
         cur().last_end = end;
         break;
@@ -358,6 +390,9 @@ void CallStackMachine::process(const Element& e)
     case ElementKind::Unknown:
         break;
     }
+
+    if (e.has_cc)
+        close_window(e.cycle_count);
 }
 
 void CallStackMachine::finish()
@@ -368,7 +403,8 @@ void CallStackMachine::finish()
         auto& stack = cur().stack;
         const bool is_main = (ctx_.size() == 1);
         while (stack.size() > (is_main ? 1u : 0u)) {
-            emit(false, stack.back().fn);
+            const int thread = is_main ? cur_thread_ : kThreadUntagged;
+            emit_to(false, stack.back().fn, cur().track, thread, stack.size(), true);
             stack.pop_back();
         }
         if (is_main)
@@ -380,11 +416,19 @@ void CallStackMachine::finish()
     for (auto& kv : parked_) {
         auto& stack = kv.second;
         while (stack.size() > 1) {
-            emit_to(false, stack.back().fn, ctx_.front().track, kv.first, stack.size());
+            emit_to(false, stack.back().fn, ctx_.front().track, kv.first, stack.size(), true);
             stack.pop_back();
         }
     }
     parked_.clear();
+    // No cycle count came after the events of the last window: they are placed at
+    // the last known clock.
+    for (std::size_t k = win_slice_; k < slices_.size(); ++k)
+        slices_[k].cycle_est = win_clock_;
+    for (std::size_t k = win_switch_; k < switches_.size(); ++k)
+        switches_[k].cycle_est = win_clock_;
+    win_slice_ = slices_.size();
+    win_switch_ = switches_.size();
 }
 
 } // namespace cortrace

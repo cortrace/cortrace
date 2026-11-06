@@ -15,6 +15,7 @@
 //
 // SPDX-License-Identifier: MIT
 #include "cortrace/callstack.hpp"
+#include "cortrace/callstats.hpp"
 #include "cortrace/coverage.hpp"
 #include "cortrace/decoder.hpp"
 #include "cortrace/deframe.hpp"
@@ -308,6 +309,13 @@ int main(int argc, char** argv)
         .help("CPU clock for --cycle-time cycles->ns (0 = raw cycles as ticks)");
     program.add_argument("--perf").metavar("out.perftrace").help("write a Perfetto trace");
     program.add_argument("--edges").metavar("out.tsv").help("write call edges for ELF cross-check");
+    program.add_argument("--stats-out")
+        .metavar("stats.json")
+        .help("write per-function, call-edge and per-thread statistics (cycles; needs cycle "
+              "counts, i.e. the timing ETM profile)");
+    program.add_argument("--folded-out")
+        .metavar("out.folded")
+        .help("write folded stacks (self cycles) for flame graphs");
     program.add_argument("--events")
         .metavar("out.log")
         .help("plain +B/-E event log for structural verify");
@@ -465,6 +473,8 @@ int main(int argc, char** argv)
     const auto perf_opt = program.present("--perf");
     const auto edges_opt = program.present("--edges");
     const auto events_opt = program.present("--events");
+    const auto stats_opt = program.present("--stats-out");
+    const auto folded_opt = program.present("--folded-out");
     const char* time_path = time_opt ? time_opt->c_str() : nullptr;
     const char* perf_path = perf_opt ? perf_opt->c_str() : nullptr;
     const bool etm_time = program.get<bool>("--etm-time");
@@ -1085,6 +1095,43 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "wrote %zu events -> %s\n", machine.slices().size(), events_path);
     }
 
+    if (stats_opt || folded_opt) {
+        const auto& sl = machine.slices();
+        if (sl.empty() || sl.back().cycle_clock == 0) {
+            std::fprintf(stderr,
+                "error: no cycle counts in the trace: arm with the timing ETM profile "
+                "(cortrace arm --profile timing)\n");
+            return 2;
+        }
+        std::map<int, std::string> names;
+        for (const auto& r : nx_runs)
+            names[r.id.tid] = r.id.name;
+        const CallStats cs = compute_callstats(sl, machine.thread_switches(), names);
+        auto write_file = [](const std::string& path, const std::string& text) {
+            FILE* f = std::fopen(path.c_str(), "w");
+            if (!f) {
+                std::fprintf(stderr, "error: cannot write %s\n", path.c_str());
+                return false;
+            }
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+            return true;
+        };
+        if (stats_opt && !write_file(*stats_opt, cs.to_json(elf_path, sysclk_hz)))
+            return 1;
+        if (folded_opt && !write_file(*folded_opt, cs.folded_text()))
+            return 1;
+        std::fprintf(stderr,
+            "callstats: %zu functions, %zu edges, %zu threads; %llu cycles credited, %llu dropped "
+            "(lost trace), %llu calls spanned lost trace, %llu calls open at the end%s%s%s%s\n",
+            cs.functions.size(), cs.edges.size(), cs.threads.size(),
+            static_cast<unsigned long long>(cs.credited),
+            static_cast<unsigned long long>(cs.dropped),
+            static_cast<unsigned long long>(cs.crossed_frames),
+            static_cast<unsigned long long>(cs.truncated_frames), stats_opt ? " -> " : "",
+            stats_opt ? stats_opt->c_str() : "", folded_opt ? " + " : "",
+            folded_opt ? folded_opt->c_str() : "");
+    }
     // --strict verdict. balanced() is necessary but nowhere near sufficient
     // on a deterministic loop -- mismatched_returns / dropped_calls /
     // recovered_missed_returns are all silent heuristic patches that could

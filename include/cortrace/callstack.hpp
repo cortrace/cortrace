@@ -36,6 +36,33 @@ struct SliceEvent {
     uint64_t etm_ts = 0; // most-recent ETM global timestamp seen before this event
     uint64_t cycle_clock = 0; // accumulated CPU cycles (cycle counting) at this event
     int thread = kThreadUntagged; // owning thread, see kThreadUntagged / kThreadBoot
+    // Trace losses (NoSync, Overflow, TraceOn, AddrNacc) seen before this event.
+    // A begin and an end with different values have lost trace between them.
+    uint64_t losses = 0;
+    // An end the machine made up because the trace stopped (finish()) or the
+    // boot context was left (first thread switch), not one the CPU executed.
+    bool truncated = false;
+    // Instructions the CPU had executed (decoder ranges) when this event happened,
+    // and the CPU cycles at this event estimated from them: the cycles of a cycle
+    // count are spread over the instructions it covers, so a function shorter than
+    // the count interval still gets its share (cycle_clock alone only moves when a
+    // count arrives, and gives such a function zero). Both are valid once the
+    // slice is final: see CallStackMachine::slices().
+    uint64_t instr = 0;
+    uint64_t cycle_est = 0;
+};
+
+// The CPU switched from thread `from` to thread `to`. It sits between
+// slices()[slice_index - 1] and slices()[slice_index].
+struct ThreadSwitch {
+    std::size_t slice_index = 0;
+    uint64_t byte_index = 0;
+    uint64_t cycle_clock = 0;
+    uint64_t losses = 0;
+    int from = kThreadBoot;
+    int to = kThreadBoot;
+    uint64_t instr = 0;
+    uint64_t cycle_est = 0; // as SliceEvent::cycle_est
 };
 
 // An ETM global-timestamp anchor: the TSGEN value that was in force at a given
@@ -84,6 +111,7 @@ public:
     void finish();
 
     const std::vector<SliceEvent>& slices() const { return slices_; }
+    const std::vector<ThreadSwitch>& thread_switches() const { return switches_; }
     const StackMetrics& metrics() const { return metrics_; }
 
     // caller->callee edge -> count. Used to cross-check against the ELF `bl`
@@ -128,7 +156,8 @@ private:
     void relabel_top(const std::string& fn);
     Context& cur() { return ctx_.back(); } // active (innermost) context
     void emit(bool begin, const std::string& name); // to the active track
-    void emit_to(bool begin, const std::string& name, int track, int thread, std::size_t depth);
+    void emit_to(bool begin, const std::string& name, int track, int thread, std::size_t depth,
+        bool truncated = false);
     int track_for_exception(uint32_t number); // stable track id per exc number
 
     const SymbolTable& syms_;
@@ -136,6 +165,7 @@ private:
     int cur_thread_ = kThreadBoot; // thread whose stack is ctx_[0].stack
     std::map<int, std::vector<Frame>> parked_; // stacks of the threads not running
     std::vector<SliceEvent> slices_;
+    std::vector<ThreadSwitch> switches_;
     std::map<std::string, long> begins_by_fn_;
     std::map<std::string, long> ends_by_fn_;
     std::map<std::string, long> edges_;
@@ -149,6 +179,17 @@ private:
     uint64_t last_etm_ts_ = 0; // most-recent ETM global timestamp value
     uint64_t cycle_clock_ = 0; // accumulated CPU cycles (cycle counting)
     uint64_t gaps_ = 0; // trace discontinuities (lost sync, unreachable code) so far
+    uint64_t losses_ = 0; // every NoSync / Overflow / TraceOn / AddrNacc so far
+    // Cycle estimate (SliceEvent::cycle_est): events since the last cycle count
+    // wait for the next one, which tells how many cycles its window took.
+    uint64_t instr_clock_ = 0; // instructions executed so far
+    uint64_t range_instr_ = 0; // instructions of the range being processed
+    bool range_ending_ = false; // events now are at the END of that range
+    uint64_t win_clock_ = 0; // cycle clock at the start of the open window
+    uint64_t win_instr_ = 0; // instr_clock_ at the start of the open window
+    std::size_t win_slice_ = 0; // first slice / switch of the open window
+    std::size_t win_switch_ = 0;
+    void close_window(uint64_t cycles);
     bool pending_call_ = false;
     uint32_t pending_ret_ = 0;
     bool after_blind_ = false;
