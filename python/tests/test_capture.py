@@ -233,3 +233,22 @@ def test_main_prints_result_and_opens(monkeypatch, tmp_path, capsys):
     assert capsys.readouterr().out.strip() == "/x/y.pf" and not opened
     assert capture.main(base + ["--open"]) == 0
     assert opened == [["/x/y.pf", "--keep"]]
+
+
+def test_stats_ask_the_decoder_for_the_statistics_and_the_folded_stacks(tmp_path):
+    cmd = capture.decode_command(args(tmp_path, "--stats"), "raw", "out.pf", "syms")
+    assert cmd[cmd.index("--stats-out") + 1] == str(tmp_path / "stats_t.json")
+    assert cmd[cmd.index("--folded-out") + 1] == str(tmp_path / "folded_t.txt")
+    plain = capture.decode_command(args(tmp_path), "raw", "out.pf", "syms")
+    assert "--stats-out" not in plain and "--folded-out" not in plain
+
+
+def test_run_with_stats_says_where_they_went(monkeypatch, tmp_path, capsys):
+    raw = tmp_path / "r.bin"
+    raw.write_bytes(b"x")
+    monkeypatch.setattr(capture, "run_cmd", fake_decode())
+    monkeypatch.setattr(capture.subprocess, "run", lambda *a, **_k: None)
+    capture.run(args(tmp_path / "out", "--stats"), raw_in=str(raw))
+    err = capsys.readouterr().err
+    assert "stats_t.json" in err and "folded_t.txt" in err
+    assert "cortrace stats report" in err and "cortrace stats flame" in err

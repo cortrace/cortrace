@@ -127,6 +127,13 @@ def parse_args(argv=None):
         "--raw-in", default=None, help="skip the capture; use this raw file"
     )
     ap.add_argument("--open", action="store_true", help="open the result in Perfetto")
+    ap.add_argument(
+        "--stats",
+        action="store_true",
+        help="also write stats_<tag>.json (per-function, call-edge and per-thread "
+        "cycles) and folded_<tag>.txt (flame graph input); needs the timing ETM "
+        "profile. Read them with `cortrace stats report` / `cortrace stats flame`",
+    )
     return finish_args(ap, ap.parse_args(argv))
 
 
@@ -172,6 +179,14 @@ def grab(a, raw, allow_loss=False):
     if code != 0:
         sys.exit("cortrace-grab failed")
     return True
+
+
+def stats_paths(a):
+    """The files written by --stats: the statistics and the folded stacks."""
+    return (
+        os.path.join(a.out_dir, f"stats_{a.tag}.json"),
+        os.path.join(a.out_dir, f"folded_{a.tag}.txt"),
+    )
 
 
 def note_path(a):
@@ -230,6 +245,9 @@ def decode_command(a, raw, perf, syms, thread_map=None):
         cmd += ["--itm-note-out", note_path(a)]
     if thread_map:
         cmd += ["--thread-map", thread_map]
+    if getattr(a, "stats", False):
+        stats, folded = stats_paths(a)
+        cmd += ["--stats-out", stats, "--folded-out", folded]
     return cmd
 
 
@@ -263,12 +281,23 @@ def decode_hw(a, raw):
     tmap = build_thread_map(a, raw, syms)
     cmd = decode_command(a, raw, perf, syms, tmap)
     proc = run_cmd(cmd, capture_output=True, text=True)
-    keys = ("stream health", "begins / ends", "wrote", "error", "itm notes: port")
+    keys = (
+        "stream health",
+        "begins / ends",
+        "wrote",
+        "error",
+        "itm notes: port",
+        "callstats:",
+    )
     for line in (proc.stderr + proc.stdout).splitlines():
         if any(k in line for k in keys):
             log("  " + line.strip())
     if proc.returncode != 0 or not os.path.isfile(perf):
         sys.exit("decode failed")
+    if getattr(a, "stats", False):
+        stats, folded = stats_paths(a)
+        log(f"stats: {stats}  (cortrace stats report {stats})")
+        log(f"folded stacks: {folded}  (cortrace stats flame {folded} -o flame.svg)")
     if a.notes:
         notes = note_path(a)
         if not os.path.isfile(notes) or os.path.getsize(notes) == 0:

@@ -19,6 +19,7 @@ SUMMARIES = {
     "cover": "code coverage from the trace: run, report (text/json/lcov/cobertura), "
     "merge, diff",
     "profile": "cycle-accurate profile from the trace: run, report, diff",
+    "stats": "call-graph / per-thread statistics and flame graphs: report, flame",
     "tcbmap": "dump the live pid -> thread-name map through OpenOCD",
     "os": "OS plugins: list, find the variable to watch, resolve thread names",
     "arm": "arm ETM/ITM/DWT trace on the target through a running OpenOCD",
@@ -68,6 +69,7 @@ COMMANDS = {
     "serve": _lazy("serve"),
     "cover": _lazy("cover"),
     "profile": _lazy("prof"),
+    "stats": _lazy("stats"),
     "tcbmap": _lazy("tcbmap"),
     "os": _lazy("osctl"),
     "arm": _lazy("armctl"),
