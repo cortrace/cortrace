@@ -31,7 +31,7 @@ It is verified on the STM32H743 (Cortex-M7, ETMv4) with bare-metal, NuttX and Fr
 `.deb` for Ubuntu 22.04. To put NuttX's software notes on the same time axis, use `nxtrace merge` from pynuttx.
 
 > Design and roadmap: [`docs/00-architecture.md`](docs/00-architecture.md). Coverage design and measurements:
-> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md). Cycle profiling: [`docs/08-cycle-profile.md`](docs/08-cycle-profile.md), measurements: [`docs/09-profile-measurements.md`](docs/09-profile-measurements.md), cross-validating cachecliff: [`docs/10-cachecliff-validation.md`](docs/10-cachecliff-validation.md), i.MX RT1176 trace measurements and limits: [`docs/11-mimxrt1176.md`](docs/11-mimxrt1176.md) (all in Chinese).
+> [`docs/07-realtime-coverage.md`](docs/07-realtime-coverage.md). Cycle profiling: [`docs/08-cycle-profile.md`](docs/08-cycle-profile.md), measurements: [`docs/09-profile-measurements.md`](docs/09-profile-measurements.md), cross-validating cachecliff: [`docs/10-cachecliff-validation.md`](docs/10-cachecliff-validation.md), i.MX RT1176 trace measurements and limits: [`docs/11-mimxrt1176.md`](docs/11-mimxrt1176.md), call graph / flame graph / per-thread statistics: [`docs/12-call-stats.md`](docs/12-call-stats.md) (all in Chinese).
 
 ## Install (Ubuntu 22.04 amd64)
 

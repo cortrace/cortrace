@@ -443,6 +443,16 @@ cortrace profile diff out/prof_a.json out/prof_b.json     # 改了一个条件�
 - ETM 只给周期，不给停顿的原因。取指停顿（I-cache、Flash）要改一个条件跑两次再 `diff`。
   方法、验证数据和局限见 [`08-cycle-profile.md`](08-cycle-profile.md)，两个固件的实测数据汇总见 [`09-profile-measurements.md`](09-profile-measurements.md)。
 
+### 4.9 调用图、火焰图和线程统计（`stats`）
+同一份带周期计数的 trace，除了每个函数的自身周期（`profile`），还能得到调用关系、包含时间（含递归去重）、每个线程占用的 CPU 和被中断抢走的周期，以及火焰图。
+```sh
+cortrace arm --platform stm32h743 --os none --profile timing --probe-telnet 127.0.0.1:4444
+cortrace capture --elf fw.elf --iface <nic> --secs 1 --sysclk-hz 150e6 --stats     # 多写 stats_<tag>.json 和 folded_<tag>.txt
+cortrace stats report stats_<tag>.json --edges 20                                  # 线程表、函数表、调用边
+cortrace stats report stats_<tag>.json --func lv_draw_sw_blend                     # 谁调用它、它调用谁
+cortrace stats flame folded_<tag>.txt -o flame.svg --sysclk-hz 150e6               # 浏览器打开
+```
+trace 丢过数据的区间不会算进时间：跨过丢失的调用只计次数（`crossed`），报告头部给出丢了多少周期。算法、和 `profile` 的对照数据和局限见 [`12-call-stats.md`](12-call-stats.md)。
 ## 5. 网页点击模式
 
 ```sh
@@ -594,6 +604,7 @@ cortrace cover run --elf fw.elf --secs 2 --exclude '*/Drivers/*'   # 代码覆�
 cortrace cover stream --elf fw.elf --iface <nic> --secs 3600       # 小时级覆盖率，不存原始数据（4.7 节）
 cortrace cover report cov_t.json --format lcov -o cov.info     # 覆盖率换格式（json / lcov / cobertura）
 cortrace profile run --elf fw.elf --secs 3 --sysclk-hz 150e6    # 周期剖析（4.8 节，需 --profile timing 布防）
+cortrace capture --elf fw.elf --secs 1 --sysclk-hz 150e6 --stats    # 调用图、线程统计、折叠栈（4.9 节），再 cortrace stats report / flame
 cortrace serve --elf nuttx --tcbmap m.txt                      # 网页点击（浏览器里点 Start）
 cortrace tcbmap --elf nuttx --telnet 127.0.0.1:4444 --out m.txt  # 线程名映射
 python -m nxtrace merge -o fused.tar --hw hw_t.perfetto \
