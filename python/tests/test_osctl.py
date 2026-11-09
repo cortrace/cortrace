@@ -68,7 +68,7 @@ def test_resolve_writes_the_thread_map(tmp_path, rtos_path, monkeypatch):
 
     created = []
     monkeypatch.setattr(
-        osctl, "OpenOcdTelnet", lambda hp: created.append(FakeProbe(hp)) or created[-1]
+        osctl, "open_probe", lambda hp: created.append(FakeProbe(hp)) or created[-1]
     )
     argv = ["resolve", "--elf", rtos_path, "--values", str(values)]
     argv += ["--out", str(out), "--probe-telnet", "127.0.0.1:4444"]

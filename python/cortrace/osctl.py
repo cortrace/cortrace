@@ -13,7 +13,7 @@ import sys
 from . import osplugins
 from .elfinfo import ElfError, ElfInfo
 from .osplugins import threadmap
-from .probe import OpenOcdTelnet, ProbeError
+from .probe import ProbeError, open_probe
 
 
 def log(msg):
@@ -35,7 +35,7 @@ def resolve_threads(elf_path, os_name, values, probe_hostport=None, extra=None):
             log("no OS plugin: threads are shown as raw pointers")
             return dict(extra or {})
         if probe_hostport:
-            probe = OpenOcdTelnet(probe_hostport)
+            probe = open_probe(probe_hostport)
         threads = plugin.resolve(values, osplugins.Memory(elf, probe), elf)
         log(f"{plugin.name}: resolved {len(threads)} of {len(values)} pointers")
         threads.update(extra or {})
@@ -76,9 +76,10 @@ def build_parser():
     res.add_argument(
         "--probe-telnet",
         default=None,
-        metavar="HOST:PORT",
-        help="read live target memory through a running OpenOCD (needed for "
-        "TCBs that are not in the ELF image)",
+        metavar="[gdb:]HOST:PORT",
+        help="read live target memory through a running OpenOCD, or with the "
+        "prefix gdb: a P&E GDB server (needed for TCBs that are not in the ELF "
+        "image)",
     )
     return ap
 

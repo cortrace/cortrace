@@ -1,11 +1,12 @@
-"""OpenOcdTelnet against a tiny fake OpenOCD telnet server."""
+"""OpenOcdTelnet and PemicroRsp against tiny fake servers."""
 
 import socket
 import threading
+import time
 
 import pytest
 
-from cortrace.probe import OpenOcdTelnet, ProbeError
+from cortrace.probe import OpenOcdTelnet, PemicroRsp, ProbeError, open_probe
 
 
 class FakeOpenOcd:
@@ -132,3 +133,158 @@ def test_a_silent_server_times_out():
     with pytest.raises(ProbeError, match="did not answer"):
         OpenOcdTelnet(f"127.0.0.1:{server.getsockname()[1]}", timeout=0.2)
     server.close()
+
+
+class FakeGdbServer:
+    """The P&E GDB server's manners: memory answers only while halted (zeros
+    otherwise), `c` has no reply, Ctrl-C halts and answers T02."""
+
+    def __init__(self, memory, packet_size=0x40, ctrl_c_after_c=True):
+        self.memory = bytearray(memory)  # the target memory from address 0
+        self.halted = False
+        self.packet_size = packet_size
+        self.log = []
+        self.ctrl_c_after_c = ctrl_c_after_c
+        self.server = socket.socket()
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(1)
+        self.port = self.server.getsockname()[1]
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    @staticmethod
+    def packet(payload):
+        return f"${payload}#{sum(payload.encode()) & 0xFF:02x}".encode()
+
+    def serve(self):
+        conn, _ = self.server.accept()
+        buf = b""
+        while True:
+            try:
+                data = conn.recv(4096)
+            except ConnectionResetError:  # the client closed with an unread ack
+                break
+            if not data:
+                break
+            buf += data
+            while buf:
+                if buf[:1] in (b"+", b"-"):
+                    buf = buf[1:]
+                elif buf[:1] == b"\x03":
+                    buf = buf[1:]
+                    self.log.append("^C")
+                    if self.ctrl_c_after_c:
+                        self.halted = True
+                        conn.sendall(self.packet("T02"))
+                elif b"#" in buf and len(buf) >= buf.index(b"#") + 3:
+                    end = buf.index(b"#") + 3
+                    payload = buf[1 : end - 3].decode()
+                    buf = buf[end:]
+                    conn.sendall(b"+")
+                    reply = self.answer(payload)
+                    if reply is not None:
+                        conn.sendall(self.packet(reply))
+                else:
+                    break
+        conn.close()
+
+    def answer(self, payload):
+        self.log.append(payload)
+        if payload.startswith("qSupported"):
+            return f"PacketSize={self.packet_size:x};qXfer:memory-map:read+"
+        if payload == "c":
+            self.halted = False
+            return None
+        if payload[0] == "m":
+            addr, count = (int(x, 16) for x in payload[1:].split(","))
+            if addr + count > len(self.memory):
+                return "E01"
+            if not self.halted:
+                return "00" * count
+            return bytes(self.memory[addr : addr + count]).hex()
+        assert payload[0] == "M"
+        head, data = payload[1:].split(":")
+        addr, count = (int(x, 16) for x in head.split(","))
+        assert self.halted
+        self.memory[addr : addr + count] = bytes.fromhex(data)
+        return "OK"
+
+
+def wait_for(condition):
+    """The fake server runs in a thread: give it a moment to see a command."""
+    for _ in range(200):
+        if condition():
+            return
+        time.sleep(0.01)
+    raise AssertionError("the fake server did not get there")
+
+
+@pytest.fixture(name="gdb_probe")
+def fixture_gdb_probe(monkeypatch):
+    monkeypatch.setattr(PemicroRsp, "HALT_SETTLE", 0)
+    server = FakeGdbServer(bytes(range(256)) * 4)
+    probe = open_probe(f"gdb:127.0.0.1:{server.port}")
+    yield server, probe
+    probe.close()
+
+
+def test_open_probe_picks_the_implementation_by_prefix(gdb_probe):
+    _, probe = gdb_probe
+    assert isinstance(probe, PemicroRsp)
+    server = FakeOpenOcd({})
+    other = open_probe(f"127.0.0.1:{server.port}")
+    assert isinstance(other, OpenOcdTelnet)
+    other.close()
+
+
+def test_gdb_read_halts_the_core_for_the_read_only(gdb_probe):
+    server, probe = gdb_probe
+    assert probe.read32(0x10) == 0x13121110
+    wait_for(lambda: not server.halted)  # `c` has no reply: wait for the server
+    assert server.log[-2:] == ["m10,4", "c"]  # halted for the read, then running
+
+
+def test_gdb_reads_between_halt_and_resume_keep_the_core_stopped(gdb_probe):
+    server, probe = gdb_probe
+    probe.halt()
+    probe.read32(0x20)
+    probe.read32(0x24)
+    assert server.halted
+    probe.resume()
+    wait_for(lambda: not server.halted)
+    assert server.log.count("c") == 2  # one to halt, one to resume
+
+
+def test_gdb_reads_split_into_packets_of_the_servers_size(gdb_probe):
+    server, probe = gdb_probe
+    assert probe.read_bytes(0x100, 200) == bytes(range(256))[:200]
+    reads = [p for p in server.log if p.startswith("m")]
+    assert len(reads) > 1
+    assert all(int(p.split(",")[1], 16) <= (0x40 - 16) // 2 for p in reads)
+
+
+def test_gdb_write_then_read_back(gdb_probe):
+    _, probe = gdb_probe
+    probe.write32(0x40, 0xDEADBEEF)
+    assert probe.read32(0x40) == 0xDEADBEEF
+
+
+def test_gdb_refused_read_gives_none_or_raises(gdb_probe):
+    _, probe = gdb_probe
+    assert probe.read_bytes(0x10_0000, 4) is None
+    with pytest.raises(ProbeError, match="cannot read"):
+        probe.read32(0x10_0000)
+
+
+def test_gdb_halt_gives_up_when_the_core_never_stops(monkeypatch):
+    monkeypatch.setattr(PemicroRsp, "HALT_SETTLE", 0)
+    server = FakeGdbServer(bytes(16), ctrl_c_after_c=False)
+    probe = open_probe(f"gdb:127.0.0.1:{server.port}")
+    probe._sock.settimeout(0.2)  # pylint: disable=protected-access
+    with pytest.raises(ProbeError, match="did not answer|did not stop"):
+        probe.halt()
+    probe.close()
+
+
+def test_gdb_unreachable_server_raises():
+    with pytest.raises(ProbeError, match="cannot connect"):
+        open_probe("gdb:127.0.0.1:1")

@@ -106,8 +106,9 @@ def add_capture_options(ap):
     ap.add_argument(
         "--probe-telnet",
         default=None,
-        metavar="HOST:PORT",
-        help="read live target memory (task names) through a running OpenOCD",
+        metavar="[gdb:]HOST:PORT",
+        help="read live target memory (task names) through a running OpenOCD, "
+        "or with the prefix gdb: a P&E GDB server",
     )
     ap.add_argument(
         "--tcbmap",

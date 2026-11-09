@@ -14,7 +14,7 @@ import sys
 from . import osplugins, platdesc, trace_arm
 from .elfinfo import ElfError, ElfInfo
 from .osplugins import Watch
-from .probe import OpenOcdTelnet, ProbeError
+from .probe import ProbeError, open_probe
 
 
 def log(msg):
@@ -39,8 +39,9 @@ def build_parser():
     ap.add_argument("--platform", help="platform name or path of its .toml file")
     ap.add_argument(
         "--probe-telnet",
-        metavar="HOST:PORT",
-        help="telnet port of a running OpenOCD (usually 127.0.0.1:4444)",
+        metavar="[gdb:]HOST:PORT",
+        help="telnet port of a running OpenOCD (usually 127.0.0.1:4444), or "
+        "with the prefix gdb: the port of a P&E GDB server (pegdbserver_console)",
     )
     ap.add_argument("--elf", help="firmware ELF (the OS plugin finds the variable)")
     ap.add_argument(
@@ -134,7 +135,7 @@ def main(argv=None):
         watches = _watches(args)
         for item in watches:
             log(f"watching {item.symbol} at 0x{item.addr:08x}")
-        probe = OpenOcdTelnet(args.probe_telnet)
+        probe = open_probe(args.probe_telnet)
         state = trace_arm.arm(
             probe,
             platform,

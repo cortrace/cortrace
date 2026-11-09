@@ -20,7 +20,7 @@ def probe_fixture(monkeypatch):
     probe = FakeProbe()
     probe.closed = False
     probe.close = lambda: setattr(probe, "closed", True)
-    monkeypatch.setattr(armctl, "OpenOcdTelnet", lambda hostport: probe)
+    monkeypatch.setattr(armctl, "open_probe", lambda hostport: probe)
     return probe
 
 
