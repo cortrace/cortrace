@@ -328,3 +328,57 @@ def test_arguments_are_parsed_by_argparse():
     with pytest.raises(SystemExit) as e:
         health.parse_args(["--check", "bogus"])
     assert e.value.code == 2
+
+
+# ---- oversampling capture (cortrace-fpga 1.2.0) ------------------------------
+def test_oversampling_feature_is_named(board, capsys):
+    mem, _ = board
+    healthy(mem)
+    stamp(mem, features=0b11_1110)
+    put(mem, health.A_FEATURES2, 1)
+    assert run() == 0
+    assert "oversampling capture" in capsys.readouterr().out
+
+
+def test_a_bitstream_without_features2_does_not_claim_oversampling(board, capsys):
+    mem, _ = board
+    healthy(mem)
+    stamp(mem, features=0b11_1110)  # 0xFF9A reads 0 on older builds
+    assert run() == 0
+    assert "oversampling" not in capsys.readouterr().out
+    assert health.has_oversample("127.0.0.1") is False
+
+
+def test_has_oversample_follows_the_feature_bit(board):
+    mem, _ = board
+    stamp(mem, features=0b11_1110)
+    put(mem, health.A_FEATURES2, 1)
+    assert health.has_oversample("127.0.0.1") is True
+
+
+def put_os(mem, rf, fr, *, on=1, vote=0, dly=5, blank=3, rejects=0, nbytes=0):
+    put(mem, health.A_OS_RF, rf)
+    put(mem, health.A_OS_FR, fr)
+    put(mem, health.A_OS_CFG, on | vote << 1)
+    put(mem, health.A_OS_DLY, dly)
+    put(mem, health.A_OS_BLANK, blank)
+    put(mem, health.A_OS_REJECTS, rejects, 2)
+    put(mem, health.A_OS_BYTES, nbytes, 2)
+
+
+def test_os_status_reads_the_settings_and_the_pin_clock(board):
+    mem, _ = board
+    put_os(mem, 8, 9, on=1, vote=1, dly=4, blank=2, rejects=300, nbytes=0x1234)
+    st = health.read_os_status("127.0.0.1")
+    assert st["on"] and st["vote"]
+    assert (st["dly"], st["blank"], st["rejects"], st["bytes"]) == (4, 2, 300, 0x1234)
+    assert st["pin_mhz"] == pytest.approx(200 / 17)  # 11.76 MHz
+    assert st["half_cycles"] == 8.5
+
+
+@pytest.mark.parametrize("rf, fr", [(0, 0), (255, 8), (8, 255), (0, 8)])
+def test_os_status_has_no_clock_when_a_spacing_is_missing_or_saturated(board, rf, fr):
+    mem, _ = board
+    put_os(mem, rf, fr)
+    st = health.read_os_status("127.0.0.1")
+    assert st["pin_mhz"] is None and st["half_cycles"] is None

@@ -81,8 +81,18 @@ A_MM_STATUS = 0xFF95  # {.., ps timeout, busy, locked} of the sampling MMCM
 A_MM_PHASE = 0xFF96  # reached fine phase, signed 10 bit LE (2 bytes)
 A_MM_LOST = 0xFF98  # lock-loss count (saturating)
 A_CLK_SEL = 0xFF99  # sampling clock in use: 1 = MMCM, 0 = TRACECLK direct
+A_FEATURES2 = 0xFF9A  # second feature bitmap
+A_OS_RF = 0xFF9B  # oversampling: rising->falling TRACECLK spacing, 200 MHz cycles
+A_OS_FR = 0xFF9C  # falling->rising spacing
+A_OS_REJECTS = 0xFF9D  # edges ignored by the dead time (2 bytes LE)
+A_OS_BYTES = 0xFF9F  # bytes produced (2 bytes LE, wraps)
+A_OS_CFG = 0xFFA1  # {.., vote, on}
+A_OS_DLY = 0xFFA2  # sample point, cycles after the edge
+A_OS_BLANK = 0xFFA3  # dead time after an accepted edge, cycles
+OS_CLOCK_HZ = 200e6  # the oversampling clock
 FEATURE_MMCM = 6
 FEATURE_DUAL = 7
+FEATURE2_OVERSAMPLE = 0
 FEATURE_NAMES = {
     0: "pin monitors",  # TRACECLK activity / pin edges / frequency / gaps
     1: "DDR3 ring",
@@ -92,6 +102,9 @@ FEATURE_NAMES = {
     5: "run-time IDELAY tap",  # CSR 0x05/0x06 move the sampling point per lane
     6: "MMCM sampling clock",  # CSR 0x14..0x16: run-time fine phase of the clock
     7: "selectable sampling clock",  # CSR 0x17: TRACECLK direct or the MMCM
+}
+FEATURE2_NAMES = {
+    0: "oversampling capture",  # CSR 0x18..0x1B: sample at 200 MHz after each edge
 }
 FLAG_DIRTY, FLAG_PRERELEASE, FLAG_UNTAGGED = 1, 2, 4
 EARLIEST_BUILD = 1_577_836_800  # 2020-01-01; anything older is not a real stamp
@@ -122,11 +135,14 @@ class Identity:  # pylint: disable=too-few-public-methods
         self.build_time = build_time_text(self.build_id)
         self.has_version = rd8(s, A_ID_MARK) == ID_MARK
         self.version = self.git = self.flags = self.features = None
+        features2 = 0
         if self.has_version:
             patch, minor, major, self.flags = rd(s, A_VERSION, 4)
             self.version = f"{major}.{minor}.{patch}"
             self.git = f"{le(A_GIT, 4):08x}"
             self.features = rd8(s, A_FEATURES)
+            features2 = rd8(s, A_FEATURES2)
+        self.oversample = bool(features2 >> FEATURE2_OVERSAMPLE & 1)
         self.mmcm = bool(self.features and self.features >> FEATURE_MMCM & 1)
         self.dual = bool(self.features and self.features >> FEATURE_DUAL & 1)
         ring_design = rd8(s, A_RING_MAGIC) == 0xD1
@@ -159,6 +175,8 @@ class Identity:  # pylint: disable=too-few-public-methods
         lines = [f"       {first}", f"       built {built}  (BUILD_ID={self.build_id})"]
         if self.features is not None:
             names = [n for bit, n in FEATURE_NAMES.items() if self.features >> bit & 1]
+            if self.oversample:
+                names.append(FEATURE2_NAMES[FEATURE2_OVERSAMPLE])
             lines.append(f"       features: {', '.join(names) or 'none'}")
 
         lines.append("       (read over the UDP readout port :5001, not JTAG)")
@@ -212,6 +230,53 @@ def mmcm_status(s):
     raw = int.from_bytes(rd(s, A_MM_PHASE, 2), "little") & 0x3FF
     phase = raw - 0x400 if raw & 0x200 else raw
     return bool(flags & 1), bool(flags & 2), bool(flags & 4), phase, rd8(s, A_MM_LOST)
+
+
+def os_status(s):
+    """State of the oversampling capture: a dict with the settings and what it has
+    measured. `pin_mhz` is the TRACECLK frequency from the two edge spacings,
+    None when the clock is absent or too slow to measure (a spacing of 255 or 0).
+    Only meaningful on bitstreams with the oversampling feature."""
+    cfg = rd8(s, A_OS_CFG)
+    rf, fr = rd8(s, A_OS_RF), rd8(s, A_OS_FR)
+    out = {
+        "on": bool(cfg & 1),
+        "vote": bool(cfg & 2),
+        "dly": rd8(s, A_OS_DLY),
+        "blank": rd8(s, A_OS_BLANK),
+        "rf": rf,
+        "fr": fr,
+        "rejects": int.from_bytes(rd(s, A_OS_REJECTS, 2), "little"),
+        "bytes": int.from_bytes(rd(s, A_OS_BYTES, 2), "little"),
+    }
+    measurable = 0 < rf < 255 and 0 < fr < 255
+    out["pin_mhz"] = OS_CLOCK_HZ / (rf + fr) / 1e6 if measurable else None
+    out["half_cycles"] = (rf + fr) / 2 if measurable else None
+    return out
+
+
+def read_os_status(ip):
+    """os_status() over a fresh socket; for `cortrace fpga ctrl`."""
+    global IP  # pylint: disable=global-statement
+    IP = ip
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(1.0)
+    try:
+        return os_status(s)
+    finally:
+        s.close()
+
+
+def has_oversample(ip):
+    """True if the bitstream at `ip` has the oversampling capture."""
+    global IP  # pylint: disable=global-statement
+    IP = ip
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(2.0)
+    try:
+        return Identity(s).oversample
+    finally:
+        s.close()
 
 
 def read_mmcm_status(ip):

@@ -173,3 +173,63 @@ def test_discovery_permission_error_falls_back_to_default_ip(monkeypatch):
     monkeypatch.setattr(ctrl, "write_csr", lambda ip, a, v, **_k: seen.update(ip=ip))
     ctrl.main(["rearm"])
     assert seen["ip"] == ctrl.fpga_net.DEFAULT_FPGA_IP
+
+
+# ---- oversampling capture ----------------------------------------------------
+def test_oversample_on_writes_blank_dly_clear_enable_then_rearms(fpga, capsys):
+    assert run(["oversample", "on", "--dly", "6", "--blank", "2"]) == 0
+    assert fpga.csr_writes == [
+        (ctrl.REG_OS_BLANK, 2),
+        (ctrl.REG_OS_DLY, 6),
+        (ctrl.REG_OS_CLR, 1),
+        (ctrl.REG_OS_CTRL, 1),
+        (ctrl.REG_REARM, 1),
+    ]
+    assert "oversampling on" in capsys.readouterr().out
+
+
+def test_oversample_on_keeps_the_settings_that_are_not_given(fpga):
+    assert run(["oversample", "on"]) == 0
+    addrs = [a for a, _ in fpga.csr_writes]
+    assert ctrl.REG_OS_DLY not in addrs and ctrl.REG_OS_BLANK not in addrs
+
+
+def test_oversample_vote_sets_bit_one(fpga, capsys):
+    assert run(["oversample", "on", "--vote"]) == 0
+    assert (ctrl.REG_OS_CTRL, 3) in fpga.csr_writes
+    assert "vote" in capsys.readouterr().out
+
+
+def test_oversample_off_clears_the_enable_and_rearms(fpga, capsys):
+    assert run(["oversample", "off"]) == 0
+    assert fpga.csr_writes == [(ctrl.REG_OS_CTRL, 0), (ctrl.REG_REARM, 1)]
+    assert "IDDR" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("args", [["--dly", "32"], ["--blank", "-1"], ["--dly", "x"]])
+def test_oversample_rejects_out_of_range_settings(fpga, args):
+    with pytest.raises(SystemExit):
+        run(["oversample", "on"] + args)
+    assert fpga.csr_writes == []
+
+
+def test_oversample_status_prints_the_pin_clock(fpga, monkeypatch, capsys):
+    monkeypatch.setattr(health, "PORT", fpga.readout_port)
+    for addr, value in (
+        (health.A_OS_RF, 8),
+        (health.A_OS_FR, 8),
+        (health.A_OS_CFG, 1),
+        (health.A_OS_DLY, 5),
+        (health.A_OS_BLANK, 3),
+    ):
+        fpga.mem[addr] = value
+    assert run(["oversample", "status"]) == 0
+    out = capsys.readouterr().out
+    assert "oversampling on" in out and "12.50 MHz" in out and "dly 5" in out
+    assert fpga.csr_writes == []
+
+
+def test_oversample_status_without_a_clock_says_so(fpga, monkeypatch, capsys):
+    monkeypatch.setattr(health, "PORT", fpga.readout_port)
+    assert run(["oversample", "status"]) == 0
+    assert "not measurable" in capsys.readouterr().out

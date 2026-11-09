@@ -1,3 +1,6 @@
+import argparse
+import json
+
 import pytest
 
 from cortrace.fpga import calibrate
@@ -181,3 +184,223 @@ def test_a_circular_range_that_passes_everywhere():
 def test_the_phase_knob_period_follows_the_multiplier():
     assert calibrate.PhaseKnob("x", None, None, 14).period == 392
     assert calibrate.PhaseKnob("x", None, None, 16).period == 448
+
+
+# ---- oversampling capture ----------------------------------------------------
+
+
+class FakeCtrl:
+    """Records CSR writes and keeps the settings the fake target reacts to."""
+
+    REG_REARM = 0x02
+    REG_IDELAY_ALL = 0x05
+    REG_OS_CTRL = 0x18
+    REG_OS_DLY = 0x19
+    REG_OS_BLANK = 0x1A
+    REG_OS_CLR = 0x1B
+
+    def __init__(self):
+        self.writes = []
+        self.state = {"tap": 16, "dly": 5, "os_on": 0, "blank": 3}
+
+    def write_csr(self, _ip, addr, value):
+        self.writes.append((addr, value))
+        if addr == self.REG_IDELAY_ALL:
+            self.state["tap"] = value
+        elif addr == self.REG_OS_DLY:
+            self.state["dly"] = value
+        elif addr == self.REG_OS_BLANK:
+            self.state["blank"] = value
+        elif addr == self.REG_OS_CTRL:
+            self.state["os_on"] = value & 1
+
+
+class FakeHealth:
+    def __init__(self, oversample=True, half=8.5):
+        self.oversample, self.half = oversample, half
+
+    def has_oversample(self, _ip):
+        return self.oversample
+
+    def read_os_status(self, _ip):
+        if self.half is None:
+            return {"half_cycles": None, "pin_mhz": None}
+        return {"half_cycles": self.half, "pin_mhz": 200 / (2 * self.half)}
+
+
+class FakeProber:
+    """Decodes cleanly where `sim["good"](state)` says so."""
+
+    sim = {"good": lambda _state: False}
+
+    def __init__(self, a, ctrl, health, iface):
+        del a, health, iface
+        self.ctrl = ctrl
+        self.events = {}
+        self.rate_mhz = 12.0
+
+    def measure(self, _secs):
+        ok = FakeProber.sim["good"](self.ctrl.state)
+        return summary(events=9000 if ok else 0)
+
+    def close(self):
+        pass
+
+
+def cal_args(tmp_path, *extra):
+    p = argparse.ArgumentParser()
+    calibrate.add_arguments(p)
+    return p.parse_args(
+        ["--elf", "x.elf", "--save", str(tmp_path / "rec.json")] + list(extra)
+    )
+
+
+@pytest.fixture(name="rig")
+def rig_fixture(monkeypatch, tmp_path):
+    monkeypatch.setattr(calibrate, "Prober", FakeProber)
+    monkeypatch.setattr(calibrate, "_clock_source", lambda _ip, _h: "direct")
+    return FakeCtrl(), tmp_path
+
+
+def test_the_oversample_range_ends_before_the_next_edge():
+    # half a period of 8.5 cycles (11.8 MHz): sample points 0..6
+    knob = calibrate.OversampleKnob("ip", FakeCtrl(), 8.5, False)
+    assert (knob.lo, knob.hi, knob.blank) == (0, 6, 2)
+    assert knob.unit_ps == 5000.0
+    assert not knob.circular
+
+
+def test_the_oversample_range_is_capped_by_the_hardware():
+    knob = calibrate.OversampleKnob("ip", FakeCtrl(), 83.0, True)
+    assert (knob.hi, knob.blank) == (31, 27)
+    assert knob.vote
+
+
+def test_the_oversample_blank_is_at_least_one_cycle():
+    assert calibrate.OversampleKnob("ip", FakeCtrl(), 4.0, False).blank == 1
+
+
+def test_the_oversample_knob_writes_prepare_apply_and_release():
+    ctrl = FakeCtrl()
+    knob = calibrate.OversampleKnob("ip", ctrl, 8.5, True)
+    knob.prepare()
+    knob.apply(3)
+    knob.release()
+    assert ctrl.writes == [
+        (ctrl.REG_OS_BLANK, 2),
+        (ctrl.REG_OS_CLR, 1),
+        (ctrl.REG_OS_CTRL, 3),  # on + vote
+        (ctrl.REG_OS_DLY, 3),
+        (ctrl.REG_REARM, 1),
+        (ctrl.REG_OS_CTRL, 0),
+        (ctrl.REG_REARM, 1),
+    ]
+
+
+def test_auto_falls_back_to_oversampling_when_no_tap_decodes(rig, capsys):
+    ctrl, tmp_path = rig
+    # edge-aligned target: no tap works, sample points 2..4 do
+    FakeProber.sim["good"] = lambda st: st["os_on"] and 2 <= st["dly"] <= 4
+    a = cal_args(tmp_path)
+    assert calibrate.run(a, "ip", "eth0", ctrl, FakeHealth()) == calibrate.EXIT_OK
+    out = capsys.readouterr().out
+    assert "trying oversample" in out and "dly" in out
+    assert ctrl.state["os_on"] == 1 and ctrl.state["dly"] == 3
+    rec = json.loads((tmp_path / "rec.json").read_text())
+    assert rec["mode"] == "oversample" and rec["knob"] == "dly" and rec["value"] == 3
+    assert rec["blank"] == 2 and rec["vote"] is False
+
+
+def test_auto_keeps_the_idelay_window_when_there_is_one(rig):
+    ctrl, tmp_path = rig
+    FakeProber.sim["good"] = lambda st: not st["os_on"] and 12 <= st["tap"] <= 20
+    a = cal_args(tmp_path)
+    assert calibrate.run(a, "ip", "eth0", ctrl, FakeHealth()) == calibrate.EXIT_OK
+    assert ctrl.state["os_on"] == 0 and ctrl.state["tap"] == 16
+    assert (ctrl.REG_OS_CTRL, 1) not in ctrl.writes
+    rec = json.loads((tmp_path / "rec.json").read_text())
+    assert rec["mode"] == "direct"
+
+
+def test_auto_starts_on_the_iddr_path_even_if_oversampling_was_left_on(rig):
+    ctrl, tmp_path = rig
+    ctrl.state["os_on"] = 1
+    FakeProber.sim["good"] = lambda st: not st["os_on"] and 12 <= st["tap"] <= 20
+    assert calibrate.run(cal_args(tmp_path), "ip", "eth0", ctrl, FakeHealth()) == 0
+    assert ctrl.writes[0] == (ctrl.REG_OS_CTRL, 0)
+
+
+def test_oversampling_is_released_when_it_does_not_work_either(rig, capsys):
+    ctrl, tmp_path = rig
+    FakeProber.sim["good"] = lambda st: False
+    code = calibrate.run(cal_args(tmp_path), "ip", "eth0", ctrl, FakeHealth())
+    assert code != calibrate.EXIT_OK
+    assert ctrl.state["os_on"] == 0  # back on the IDDR path
+    assert "trying oversample" in capsys.readouterr().out
+
+
+def test_a_bitstream_without_the_feature_is_not_asked_to_oversample(rig, capsys):
+    ctrl, tmp_path = rig
+    FakeProber.sim["good"] = lambda st: False
+    code = calibrate.run(
+        cal_args(tmp_path), "ip", "eth0", ctrl, FakeHealth(oversample=False)
+    )
+    assert code != calibrate.EXIT_OK
+    assert ctrl.writes.count((ctrl.REG_OS_CTRL, 1)) == 0
+    assert "trying" not in capsys.readouterr().out
+
+
+def test_mode_oversample_needs_the_feature(rig, capsys):
+    ctrl, tmp_path = rig
+    a = cal_args(tmp_path, "--mode", "oversample")
+    code = calibrate.run(a, "ip", "eth0", ctrl, FakeHealth(oversample=False))
+    assert code == calibrate.EXIT_ERROR
+    assert "no oversampling capture" in capsys.readouterr().out
+    assert ctrl.writes == []
+
+
+def test_mode_oversample_skips_the_idelay_scan(rig):
+    ctrl, tmp_path = rig
+    FakeProber.sim["good"] = lambda st: st["os_on"] and 1 <= st["dly"] <= 5
+    a = cal_args(tmp_path, "--mode", "oversample", "--vote")
+    assert calibrate.run(a, "ip", "eth0", ctrl, FakeHealth()) == calibrate.EXIT_OK
+    assert not any(addr == ctrl.REG_IDELAY_ALL for addr, _ in ctrl.writes)
+    assert (ctrl.REG_OS_CTRL, 3) in ctrl.writes  # on + vote
+    assert json.loads((tmp_path / "rec.json").read_text())["vote"] is True
+
+
+def test_oversampling_without_a_measurable_clock_is_an_error(rig, capsys):
+    ctrl, tmp_path = rig
+    FakeProber.sim["good"] = lambda st: False
+    a = cal_args(tmp_path, "--mode", "oversample")
+    code = calibrate.run(a, "ip", "eth0", ctrl, FakeHealth(half=None))
+    assert code == calibrate.EXIT_ERROR
+    assert "cannot measure TRACECLK" in capsys.readouterr().out
+
+
+def test_oversampling_refuses_a_clock_that_is_too_fast(rig, capsys):
+    ctrl, tmp_path = rig
+    FakeProber.sim["good"] = lambda st: False
+    a = cal_args(tmp_path, "--mode", "oversample")
+    code = calibrate.run(a, "ip", "eth0", ctrl, FakeHealth(half=3.0))
+    assert code == calibrate.EXIT_ERROR
+    assert "too fast" in capsys.readouterr().out
+
+
+def test_decode_args_reach_cortrace_decode(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_run(cmd, **_kw):
+        seen.append(cmd)
+        return type("Done", (), {"stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(calibrate.subprocess, "run", fake_run)
+    prober = object.__new__(calibrate.Prober)
+    prober.a = cal_args(
+        tmp_path, "--decode-args", "--etm-idr0 0x08 --etm-configr '0x1'"
+    )
+    prober.raw, prober.syms = "cal.bin", "cal.nm"
+    assert prober.decode() is None  # an empty summary parses to nothing
+    cmd = seen[0]
+    assert cmd[-4:] == ["--etm-idr0", "0x08", "--etm-configr", "0x1"]
+    assert "--raw" in cmd and "x.elf" in cmd

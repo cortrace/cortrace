@@ -8,6 +8,12 @@ CSR map (fpga_core_net control port, doc 15):
   0x14/0x15  MMCM sampling clock fine phase (signed 10 bit, VCO/56 steps; low
         byte first, applied by the 0x15 write), 0x16 reset the MMCM
   0x17  sampling clock source of a dual build: 0 TRACECLK direct, 1 MMCM
+  0x18  oversampling capture (feature "oversampling capture"): bit0 on, bit1 vote;
+        the pins are sampled at 200 MHz and a nibble taken `dly` cycles after
+        each TRACECLK edge, for targets whose data changes with the edge
+  0x19  oversampling sample point (cycles after the edge, 0..31, power-on 5)
+  0x1A  oversampling dead time after an accepted edge (cycles, power-on 3)
+  0x1B  any write clears the oversampling status
   0x08  TPIU port width: 4, 2 or 1 bit -- runtime, so ONE bitstream serves all
         three widths (readback at DEPTH+33)
   0x09  stream selftest ramp   0x0B  fixed 0x42 source
@@ -29,6 +35,8 @@ Usage:
   cortrace fpga ctrl --ip 192.168.10.42 set-tap 16
   cortrace fpga ctrl --ip 192.168.10.42 set-tap 12 --lane 2
   cortrace fpga ctrl --ip 192.168.10.42 set-phase -120
+  cortrace fpga ctrl --ip 192.168.10.42 oversample on --dly 5 --blank 3
+  cortrace fpga ctrl --ip 192.168.10.42 oversample status
   cortrace fpga ctrl --ip 192.168.10.42 relock
   cortrace fpga ctrl --ip 192.168.10.42 rearm
 """
@@ -55,6 +63,11 @@ REG_MM_RELOCK = 0x16  # any write resets the sampling MMCM
 MM_MAX_STEPS = 255  # the RTL clamps to this
 MM_STEPS_PER_VCO = 56  # one step = 1/56 of the VCO period
 REG_CLK_SEL = 0x17  # dual build: 0 = TRACECLK direct (IDELAY), 1 = MMCM
+REG_OS_CTRL = 0x18  # bit0 oversampling capture on, bit1 majority vote
+REG_OS_DLY = 0x19  # sample point, cycles after the TRACECLK edge
+REG_OS_BLANK = 0x1A  # dead time after an accepted edge, cycles
+REG_OS_CLR = 0x1B  # any write clears the oversampling status
+OS_MAX_CYCLES = 31
 REG_WIDTH = 0x08  # TPIU parallel port width: 4, 2 or 1 (runtime, no reflash)
 REG_STREAM_SELFTEST = 0x09  # 1=stream FPGA-side byte ramp instead of real trace
 REG_IDDR_PRBS = 0x0D  # 1=push a trace_clk-domain xorshift32 PRBS through the
@@ -122,6 +135,45 @@ def _finish_set_phase(a, timeout_s=3.0):
     # the sampling clock moved while data was flowing; re-arm for a clean capture
     write_csr(a.ip, REG_REARM, 1)
     print(f"MMCM fine phase = {phase:+d} steps{step}, capture re-armed")
+    return 0
+
+
+def _print_os_status(st):
+    clock = (
+        f"TRACECLK {st['pin_mhz']:.2f} MHz (high {st['rf']} / low {st['fr']} cycles)"
+        if st["pin_mhz"]
+        else "TRACECLK not measurable (absent, or slower than 0.8 MHz)"
+    )
+    print(
+        f"oversampling {'on' if st['on'] else 'off'}"
+        f"{', vote' if st['vote'] else ''}: dly {st['dly']}, blank {st['blank']}; "
+        f"{clock}; {st['rejects']} edges rejected, {st['bytes']} bytes"
+    )
+
+
+def _oversample(a):
+    """`oversample on|off|status`."""
+    if a.action == "status":
+        try:
+            st = health.read_os_status(a.ip)
+        except OSError:
+            print("no answer on :5001")
+            return 1
+        _print_os_status(st)
+        return 0
+    if a.action == "off":
+        write_csr(a.ip, REG_OS_CTRL, 0)
+        write_csr(a.ip, REG_REARM, 1)
+        print("oversampling off (IDDR capture), capture re-armed")
+        return 0
+    if a.blank is not None:
+        write_csr(a.ip, REG_OS_BLANK, a.blank)
+    if a.dly is not None:
+        write_csr(a.ip, REG_OS_DLY, a.dly)
+    write_csr(a.ip, REG_OS_CLR, 1)
+    write_csr(a.ip, REG_OS_CTRL, 1 | (2 if a.vote else 0))
+    write_csr(a.ip, REG_REARM, 1)
+    print(f"oversampling on{', vote' if a.vote else ''}, capture re-armed")
     return 0
 
 
@@ -208,6 +260,36 @@ def main(argv=None):  # pylint: disable=too-many-statements
         "target at each setting and write the middle of the clean window",
     )
     calibrate.add_arguments(pcal)
+    po = sub.add_parser(
+        "oversample",
+        help="oversampling capture (bitstreams with the feature): sample the pins at "
+        "200 MHz and take a nibble a set time after each TRACECLK edge. For targets "
+        "whose data changes with the clock edge, where no IDELAY tap can sample.",
+    )
+    po.add_argument("action", choices=("on", "off", "status"))
+    po.add_argument(
+        "--dly",
+        type=int,
+        default=None,
+        choices=range(OS_MAX_CYCLES + 1),
+        metavar="0..31",
+        help="sample point, 200 MHz cycles after the edge (5 ns each; default: "
+        "leave as is). It has to lie before the next edge.",
+    )
+    po.add_argument(
+        "--blank",
+        type=int,
+        default=None,
+        choices=range(OS_MAX_CYCLES + 1),
+        metavar="0..31",
+        help="dead time after an edge, cycles: edges closer than this (ringing) are "
+        "ignored. Keep it below half a TRACECLK period.",
+    )
+    po.add_argument(
+        "--vote",
+        action="store_true",
+        help="take the majority of three samples (removes one-sample glitches)",
+    )
     sub.add_parser("rearm")
     a = ap.parse_args(argv)
     if a.cmd == "set-phase" and abs(a.value) > MM_MAX_STEPS:
@@ -279,6 +361,8 @@ def main(argv=None):  # pylint: disable=too-many-statements
             f"IDDR-side CDC source = "
             f"{'trace_clk xorshift32 PRBS' if a.value else 'real IDDR sample'}"
         )
+    elif a.cmd == "oversample":
+        return _oversample(a)
     elif a.cmd == "rearm":
         write_csr(a.ip, REG_REARM, 1)
         print("soft re-arm pulsed")

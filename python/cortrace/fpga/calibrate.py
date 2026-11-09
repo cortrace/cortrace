@@ -6,6 +6,11 @@ with cortrace-decode and keeps the settings that decode without sampling errors.
 It writes the middle of the longest such window to the FPGA.
 
 The knob depends on the sampling clock of the bitstream:
+  oversample  the sample point of the oversampling capture, in 200 MHz cycles (5 ns)
+          after each TRACECLK edge. For targets whose data changes WITH the edge,
+          where no IDELAY tap or MMCM phase can sample: at 12 MHz half a period is
+          41 ns. Needs the bitstream feature; `--mode auto` falls back to it when
+          the IDELAY / MMCM scan finds no window.
   direct  the IDELAY tap of the data lanes, 0..31 (~78 ps each); not circular
   mmcm    the fine phase of the MMCM clock, in 1/56 of a VCO period. One bit time
           is 28 x MMCM_MULT steps whatever the clock, so the settings wrap round
@@ -26,6 +31,7 @@ import json
 import os
 import re
 import resource
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -35,6 +41,9 @@ from .._paths import find_binary
 
 PHASE_STEPS_PER_BIT_PER_MULT = 28  # 56 steps per VCO period, 2 bits per TRACECLK
 IDELAY_STEP_PS = 78.125
+OS_CYCLE_PS = 5000.0  # one cycle of the 200 MHz oversampling clock
+OS_MAX_DLY = 31
+OS_SETTLE_CYCLES = 2  # a sample point this close to the next edge is not used
 EXIT_OK, EXIT_ERROR, EXIT_NARROW, EXIT_NONE = 0, 1, 2, 3
 # A decode of a few MB of trace needs well under 200 MB. The helpers run with an
 # address-space limit so that a runaway one is stopped instead of the machine.
@@ -273,7 +282,7 @@ class Prober:  # pylint: disable=too-many-instance-attributes
             "--cycle-time",
             "--sysclk-hz",
             "150000000",
-        ]
+        ] + shlex.split(self.a.decode_args or "")
         try:
             done = subprocess.run(
                 cmd,
@@ -326,6 +335,38 @@ class IdelayKnob(Knob):  # pylint: disable=too-few-public-methods
 
     def apply(self, value):
         self.ctrl.write_csr(self.ip, self.ctrl.REG_IDELAY_ALL, value)
+        self.ctrl.write_csr(self.ip, self.ctrl.REG_REARM, 1)
+
+
+class OversampleKnob(Knob):
+    """The sample point of the oversampling capture, 200 MHz cycles after the
+    edge. The range ends before the next edge: a clock with half a period of
+    H cycles allows 0..H-2."""
+
+    name = "dly"
+    unit_ps = OS_CYCLE_PS
+    lo = 0
+
+    def __init__(self, ip, ctrl, half_cycles, vote):
+        self.ip, self.ctrl = ip, ctrl
+        self.half = half_cycles
+        self.hi = max(1, min(OS_MAX_DLY, int(half_cycles) - OS_SETTLE_CYCLES))
+        self.blank = max(1, min(OS_MAX_DLY, int(half_cycles) // 3))
+        self.vote = vote
+
+    def prepare(self):
+        """Switch the capture to oversampling."""
+        self.ctrl.write_csr(self.ip, self.ctrl.REG_OS_BLANK, self.blank)
+        self.ctrl.write_csr(self.ip, self.ctrl.REG_OS_CLR, 1)
+        self.ctrl.write_csr(self.ip, self.ctrl.REG_OS_CTRL, 1 | (2 if self.vote else 0))
+
+    def release(self):
+        """Back to the IDDR capture."""
+        self.ctrl.write_csr(self.ip, self.ctrl.REG_OS_CTRL, 0)
+        self.ctrl.write_csr(self.ip, self.ctrl.REG_REARM, 1)
+
+    def apply(self, value):
+        self.ctrl.write_csr(self.ip, self.ctrl.REG_OS_DLY, value)
         self.ctrl.write_csr(self.ip, self.ctrl.REG_REARM, 1)
 
 
@@ -393,10 +434,23 @@ def add_arguments(p):
     p.add_argument("--secs", type=float, default=0.05, help="capture per setting")
     p.add_argument(
         "--mode",
-        choices=("auto", "direct", "mmcm"),
+        choices=("auto", "direct", "mmcm", "oversample"),
         default="auto",
-        help="knob to turn: the IDELAY tap (direct) or the MMCM phase (mmcm); auto "
-        "takes what the bitstream samples with now",
+        help="knob to turn: the IDELAY tap (direct), the MMCM phase (mmcm) or the "
+        "sample point of the oversampling capture (oversample); auto starts with "
+        "what the bitstream samples with now and, if that finds no window, tries "
+        "oversampling when the bitstream has it",
+    )
+    p.add_argument(
+        "--vote",
+        action="store_true",
+        help="oversampling: take the majority of three samples",
+    )
+    p.add_argument(
+        "--decode-args",
+        default="",
+        help="extra options for cortrace-decode, e.g. the ETM ID registers of the "
+        "target ('--etm-idr0 0x08020EFF --etm-configr 0x1')",
     )
     p.add_argument(
         "--coarse-step", type=int, default=None, help="default: 4 taps, 28 phase steps"
@@ -428,37 +482,84 @@ def default_record_path(name):
 def _unit_ps(knob, rate_mhz, mult):
     if knob.name == "tap":
         return IDELAY_STEP_PS
+    if knob.name == "dly":
+        return OS_CYCLE_PS
     if not rate_mhz:
         return None
     return 1e6 / (56 * rate_mhz * mult)
 
 
+def _make_knob(a, mode, ip, ctrl, health):
+    if mode == "direct":
+        return IdelayKnob(ip, ctrl)
+    if mode == "oversample":
+        st = health.read_os_status(ip)
+        if st["half_cycles"] is None:
+            raise CalibrationError(
+                "the oversampler cannot measure TRACECLK (no clock, or slower than "
+                "0.8 MHz): is the target tracing?"
+            )
+        if st["half_cycles"] < OS_SETTLE_CYCLES + 2:
+            raise CalibrationError(
+                f"TRACECLK is too fast for oversampling ({st['pin_mhz']:.1f} MHz; "
+                "the limit is about 25 MHz)"
+            )
+        return OversampleKnob(ip, ctrl, st["half_cycles"], a.vote)
+    return PhaseKnob(ip, ctrl, health, a.mmcm_mult)
+
+
 def run(
     a, ip, iface, ctrl, health
-):  # pylint: disable=too-many-locals,too-many-statements,too-many-branches,too-many-return-statements
+):  # pylint: disable=too-many-locals,too-many-return-statements,too-many-branches
     """Entry point of the subcommand; returns the exit code."""
     if not iface:
         print_flush("calibrate: pass --iface (the NIC that receives the FPGA's stream)")
         return EXIT_ERROR
     try:
-        mode = a.mode if a.mode != "auto" else _clock_source(ip, health)
-        knob = (
-            IdelayKnob(ip, ctrl)
-            if mode == "direct"
-            else PhaseKnob(ip, ctrl, health, a.mmcm_mult)
-        )
-        step = a.coarse_step or (4 if mode == "direct" else 28)
+        has_os = health.has_oversample(ip)
+        if a.mode == "oversample" and not has_os:
+            print_flush("calibrate: this bitstream has no oversampling capture")
+            return EXIT_ERROR
+        first = a.mode if a.mode != "auto" else _clock_source(ip, health)
+        modes = [first]
+        if a.mode == "auto" and has_os:
+            modes.append("oversample")
+        if has_os and first != "oversample":
+            ctrl.write_csr(ip, ctrl.REG_OS_CTRL, 0)  # the IDDR path to start with
         prober = Prober(a, ctrl, health, iface)
     except (OSError, subprocess.CalledProcessError, CalibrationError) as exc:
         print_flush(f"calibrate: {exc}")
         return EXIT_ERROR
+    code = EXIT_ERROR
     try:
-        return _calibrate(a, knob, mode, step, prober)
-    except CalibrationError as exc:
-        print_flush(f"calibrate: {exc}")
-        return EXIT_ERROR
+        for i, mode in enumerate(modes):
+            knob = None
+            try:
+                knob = _make_knob(a, mode, ip, ctrl, health)
+                if mode == "oversample":
+                    knob.prepare()
+                step = a.coarse_step or _coarse_step(knob)
+                code = _calibrate(a, knob, mode, step, prober)
+            except CalibrationError as exc:
+                print_flush(f"calibrate: {exc}")
+                code = EXIT_ERROR
+            if code == EXIT_OK:
+                break
+            if knob is not None and mode == "oversample":
+                knob.release()  # not usable: leave the IDDR capture on
+            if i + 1 < len(modes):
+                print_flush(f"no {mode} setting works; trying {modes[i + 1]}")
+        return code
     finally:
         prober.close()
+
+
+def _coarse_step(knob):
+    if knob.name == "tap":
+        return 4
+    if knob.name == "dly":
+        return 1 if knob.hi <= 16 else 2
+    return 28
 
 
 def _calibrate(
@@ -541,7 +642,10 @@ def _calibrate(
         )
     min_width = a.min_width
     if min_width is None:
-        min_width = 6 if mode == "direct" else (round(500 / unit) if unit else 20)
+        if mode == "oversample":
+            min_width = 2
+        else:
+            min_width = 6 if mode == "direct" else (round(500 / unit) if unit else 20)
     if not window.full and window.width < min_width:
         print_flush(
             f"the window is narrower than {min_width} settings; temperature and "
@@ -569,6 +673,11 @@ def _calibrate(
         "width": window.width,
         "width_ns": round(window.width * unit / 1000, 3) if unit else None,
         "pin_mhz": round(prober.rate_mhz, 1),
+        **(
+            {"blank": knob.blank, "vote": knob.vote, "half_cycles": knob.half}
+            if mode == "oversample"
+            else {}
+        ),
         "time": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "applied": not a.no_apply,
     }
