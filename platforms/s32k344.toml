@@ -66,7 +66,9 @@ sysclk_hz = 160000000
 # --- trace clock -----------------------------------------------------------
 # MC_CGM mux 11 (base 0x402D8000) feeds TRACE_CLK; it is a software-controlled
 # mux, switched with the flow of RM Fig. 124 (p.1011): gate, wait until gated,
-# select, ungate, wait until running. Source PLL_PHI1_CLK (SELCTL 1001b, p.1099)
+# select, ungate, wait until running. The divider is written last: it takes a new
+# value only on a running clock (on an S32K358, DIV_STAT stayed set while the mux
+# was gated, so writing it before the ungate timed out). Source PLL_PHI1_CLK (SELCTL 1001b, p.1099)
 # must already run: the board's clock setup has to enable it (NuttX's
 # s32k344evb does, at 160 MHz). Divider: period = (DIV+1) x input (p.1101).
 # Table 157 gives DIV 0001b for TRACE_CLK on fast pads: 80 MHz from a 160 MHz
@@ -96,19 +98,6 @@ addr = 0x402D85C0
 clear = 0x0F000000
 set = 0x09000000
 [[on_trace_start]]
-comment = "MUX_11_DC_0: divider on, DIV = 1 (one atomic write)"
-op = "write32"
-addr = 0x402D85C8
-value = 0x80010000
-[[on_trace_start]]
-comment = "MUX_11_DIV_UPD_STAT.DIV_STAT == 0: divider took it"
-op = "poll32"
-addr = 0x402D85FC
-mask = 0x1
-value = 0
-tries = 100
-required = true
-[[on_trace_start]]
 comment = "MUX_11_CSC.CG: ungate TRACE_CLK"
 op = "rmw32"
 addr = 0x402D85C0
@@ -121,6 +110,19 @@ mask = 0x20000
 tries = 100
 required = true
 
+[[on_trace_start]]
+comment = "MUX_11_DC_0: divider on, DIV = 1 (one atomic write)"
+op = "write32"
+addr = 0x402D85C8
+value = 0x80010000
+[[on_trace_start]]
+comment = "MUX_11_DIV_UPD_STAT.DIV_STAT == 0: divider took it"
+op = "poll32"
+addr = 0x402D85FC
+mask = 0x1
+value = 0
+tries = 100
+required = true
 # --- pads ------------------------------------------------------------------
 # SIUL2 base 0x40290000, MSCRn at 0x240 + 4n (RM p.307). The pads are GPIO-FAST
 # on VDD_HV_B (IOMUX workbook, "IO Signal Table"): the output levels follow

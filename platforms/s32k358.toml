@@ -1,0 +1,145 @@
+# NXP S32K358 (Cortex-M7_0 of the 289 BGA), as wired on the S32K3X8EVB-Q289: 4-bit
+# parallel trace on the 20-pin Cortex Debug+ETM connector J50, i.e. on the
+# VDD_HV_A "standard plus" pads PTG6 (TRACE_ETM_CLKOUT), PTG7, PTG15, PTG16 and
+# PTF31 (TRACE_ETM_D0..D3), all ALT7.
+#
+# The CoreSight blocks and their sizes were read off a chip over the P&E probe
+# (ROM tables and ID registers), not taken from the manual; see docs/06-s32k3xx.md.
+#
+# Board notes (S32K3X8EVB-Q289 Rev C2: schematic, BOM and the IPC-D-356 netlist):
+#  - The five nets go from the MCU through 0 ohm resistors R160 (CLK), R163 (D0),
+#    R165 (D1), R167 (D2) and R169 (D3), all fitted, to J50 pins 12, 14, 16, 18, 20
+#    (and to the 38-pin Mictor P1). Nothing else is on these nets. PTF31 passes R1252
+#    (fitted, 0 ohm) first; the user switch on that ball (R1254) is not fitted. The
+#    "isolate QSPI and Ethernet" list in the HWUM does not apply to these pads.
+#  - The pads are on VDD_HV_A, which jumper J23 selects: 1-2 is 5.0 V (the default),
+#    2-3 is 3.3 V. Put J23 on 2-3 before connecting an FPGA input of 3.3 V.
+#  - The pads are standard plus pads, not the fast ones: the datasheet limits the
+#    trace clock on them to 25 MHz (Table 69). With four data lines on both clock
+#    edges that is 25 MB/s, a little under the 27.6 MB/s one core can produce at the
+#    full 240 MHz. The fast pads (PTC2, PTD7, PTD12, PTD11, PTD10) are the QSPI flash's
+#    pins on this board, behind the series resistors R713, R746, R747, R715, R714.
+name = "s32k358"
+description = "NXP S32K358 on the S32K3X8EVB-Q289, trace on J50 (PTG6, PTG7, PTG15, PTG16, PTF31)"
+core = "cortex-m7"
+
+[coresight]
+etm = 0xE0041000    # Cortex-M7_0 PPB
+dwt = 0xE0001000
+itm = 0xE0000000
+tpiu = 0x4024A000
+tsgen = 0x4024C000
+
+# Programmed in this order, sink side first. Read from the chip: the shared ETF
+# is 4 KB, the cluster ETMI ETF 2 KB.
+[[coresight.path]]
+kind = "etf"        # shared system ETF, in front of the TPIU
+base = 0x40247000
+[[coresight.path]]
+kind = "funnel"     # funnel 2: only port 0, the cluster ETMI ETF
+base = 0x40243000
+ports = 0x1
+itm_priority = false
+[[coresight.path]]
+kind = "etf"        # cluster ETMI ETF
+base = 0x40244000
+[[coresight.path]]
+kind = "funnel"     # funnel 0: port 0 = Cortex-M7_0 ETMI, port 1 = its ITM
+base = 0x40241000
+
+[trace]
+etm_trace_id = 2
+itm_trace_id = 1
+max_width = 4
+
+[clocks]
+# The usual firmware runs the core at 240 MHz (RM Table 154, option A+). A core that
+# has not been set up runs from the 48 MHz FIRC: pass --sysclk-hz 48e6 then.
+tsgen_hz = 240000000
+sysclk_hz = 240000000
+
+# --- trace clock -----------------------------------------------------------
+# MC_CGM mux 11 (base 0x402D8000) feeds TRACE_CLK. It comes out of reset on FIRC
+# (48 MHz), which needs no PLL and no firmware. It is a software-controlled mux
+# (RM Fig. 124): gate, wait until gated, select, ungate, wait until running. The
+# divider (period = (DIV+1) x input; reset value DE = 1, DIV = 0) is written last:
+# it takes a new value only on a running clock, so DIV_STAT stays set while the mux
+# is gated (seen on the chip).
+# UNVERIFIED: whether the pin clock equals TRACE_CLK or half of it (the RM's clock
+# figures draw a /2 after the divider). With the /2, DIV 0 gives 24 MHz on the pin,
+# just under the 25 MHz of the datasheet. Measure TRACECLK at the FPGA
+# (`cortrace fpga health`); use DIV = 1 if the pin clock turns out to be 48 MHz.
+[[on_trace_start]]
+comment = "MC_CGM MUX_11_CSC.CG: gate TRACE_CLK"
+op = "rmw32"
+addr = 0x402D85C0
+set = 0x4
+[[on_trace_start]]
+comment = "MUX_11_CSS.CS == 0: gated"
+op = "poll32"
+addr = 0x402D85C4
+mask = 0x20000
+value = 0
+tries = 100
+required = true
+[[on_trace_start]]
+comment = "MUX_11_CSC.SELCTL = FIRC_CLK"
+op = "rmw32"
+addr = 0x402D85C0
+clear = 0x0F000000
+[[on_trace_start]]
+comment = "MUX_11_CSC.CG: ungate TRACE_CLK"
+op = "rmw32"
+addr = 0x402D85C0
+clear = 0x4
+[[on_trace_start]]
+comment = "MUX_11_CSS.CS == 1: TRACE_CLK running"
+op = "poll32"
+addr = 0x402D85C4
+mask = 0x20000
+tries = 100
+required = true
+
+[[on_trace_start]]
+comment = "MUX_11_DC_0: divider on, DIV = 0 (one atomic write)"
+op = "write32"
+addr = 0x402D85C8
+value = 0x80000000
+[[on_trace_start]]
+comment = "MUX_11_DIV_UPD_STAT.DIV_STAT == 0: divider took it"
+op = "poll32"
+addr = 0x402D85FC
+mask = 0x1
+value = 0
+tries = 100
+required = true
+# --- pads ------------------------------------------------------------------
+# SIUL2 base 0x40290000, MSCRn at 0x240 + 4n with n the GPIO number (RM p.307);
+# SSS[3:0] = pin function (7 = TRACE_ETM_* for all five, IOMUX workbook
+# S32K358_Pinout), OBE = bit 21, DSE = bit 8 (the datasheet measures trace timing
+# with DSE = 1 and SRC = 0, SRC = bit 14, 0 = fastest).
+[[on_trace_start]]
+comment = "MSCR198 PTG6  = TRACE_ETM_CLKOUT (ALT7, OBE, DSE)"
+op = "write32"
+addr = 0x40290558
+value = 0x00200107
+[[on_trace_start]]
+comment = "MSCR199 PTG7  = TRACE_ETM_D0 (ALT7, OBE, DSE)"
+op = "write32"
+addr = 0x4029055C
+value = 0x00200107
+[[on_trace_start]]
+comment = "MSCR207 PTG15 = TRACE_ETM_D1 (ALT7, OBE, DSE)"
+op = "write32"
+addr = 0x4029057C
+value = 0x00200107
+[[on_trace_start]]
+comment = "MSCR208 PTG16 = TRACE_ETM_D2 (ALT7, OBE, DSE)"
+op = "write32"
+addr = 0x40290580
+value = 0x00200107
+[[on_trace_start]]
+comment = "MSCR191 PTF31 = TRACE_ETM_D3 (ALT7, OBE, DSE)"
+op = "write32"
+addr = 0x4029053C
+value = 0x00200107
