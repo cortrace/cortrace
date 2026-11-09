@@ -35,8 +35,8 @@ Usage:
   cortrace fpga ctrl --ip 192.168.10.42 set-tap 16
   cortrace fpga ctrl --ip 192.168.10.42 set-tap 12 --lane 2
   cortrace fpga ctrl --ip 192.168.10.42 set-phase -120
-  cortrace fpga ctrl --ip 192.168.10.42 oversample on --dly 5 --blank 3
-  cortrace fpga ctrl --ip 192.168.10.42 oversample status
+  cortrace fpga ctrl --ip <FPGA_IP> oversample on --dly 5 --blank 3
+  cortrace fpga ctrl --ip <FPGA_IP> oversample status
   cortrace fpga ctrl --ip 192.168.10.42 relock
   cortrace fpga ctrl --ip 192.168.10.42 rearm
 """
