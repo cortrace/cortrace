@@ -207,7 +207,7 @@ stream health : lost-sync=0 overflow=0 resync(TraceOn)=0 addr-nacc=0 ... -> clea
 | `--time-base hybrid` | 墙钟时间戳之间用周期数插值，睡眠期间不漂、片段内有周期分辨率；需要 `--tsgen-hz` 和 `--sysclk-hz` |
 | `--tsgen-hz` / `--sysclk-hz` | ETM 时间戳时钟 / CPU 时钟（默认 150 MHz） |
 | `--os NAME` | 给线程起名的 OS 插件：`auto`（默认，按 ELF 里的符号判断）、`nuttx`、`freertos`、`none`；`cortrace os list` 看全部 |
-| `--probe-telnet HOST:PORT` | 常驻 OpenOCD 的 telnet 口（通常 `127.0.0.1:4444`），插件用它读目标上的 TCB，拿到线程名。FreeRTOS 的线程名只在目标内存里，必须给 |
+| `--probe-telnet HOST:PORT` | 常驻 OpenOCD 的 telnet 口（通常 `127.0.0.1:4444`），插件用它读目标上的 TCB，拿到线程名。FreeRTOS 的线程名只在目标内存里，必须给。前缀 `gdb:`（`gdb:127.0.0.1:7224`）改连 P&E 的 GDB 服务器，用于板载 P&E Multilink 的 S32K3 评估板，见 [06-s32k3xx.md](06-s32k3xx.md) 第 11 节 |
 | `--tcbmap FILE` | 额外的线程映射（`cortrace tcbmap` 的输出），优先于插件的结果 |
 | `--raw-in FILE` | 不抓取，直接解码一份已有的 raw 文件 |
 | `--open` | 完成后在浏览器里打开结果 |
