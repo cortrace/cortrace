@@ -53,7 +53,7 @@ def test_trace_clock_runs_from_firc_and_the_divider_is_written_on_a_running_cloc
     probe = armed(k358)
     # gate, select FIRC (SELCTL 0), ungate
     assert order(probe, 0x402D85C0) == [0x4, 0x4, 0x0]
-    assert order(probe, 0x402D85C8) == [0x80000000]  # DE, DIV = 0
+    assert order(probe, 0x402D85C8) == [0x80010000]  # DE, DIV = 1
     clock = [a for a, _ in probe.writes if 0x402D85C0 <= a <= 0x402D85FC]
     assert clock.index(0x402D85C8) == len(clock) - 1  # after the last CSC write
 

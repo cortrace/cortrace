@@ -66,11 +66,16 @@ sysclk_hz = 240000000
 # it takes a new value only on a running clock, so DIV_STAT stays set while the mux
 # is gated (seen on the chip).
 # The pin clock is half of TRACE_CLK (the /2 of the RM's clock figures), measured on
-# the scope: DIV 3 gives 6 MHz and DIV 0 gives 24 MHz on TRACE_ETM_CLKOUT. At 24 MHz
-# the standard plus pads only reach a triangle wave on a bench probe and cable;
-# 6 MHz leaves 6 MB/s, enough for the coverage profile and for the timing profile
-# of a core running at 48 MHz. On the scope the data lines change together with the
-# clock edge, not between the edges.
+# the scope: DIV 3 gives 6 MHz and DIV 0 gives 24 MHz on TRACE_ETM_CLKOUT. The data
+# changes WITH the clock edge on these pads, so the FPGA has to use its oversampling
+# capture (`cortrace fpga ctrl oversample on`), whose resolution is 5 ns:
+#   FIRC, DIV 1 (this file) 12 MHz  window of 25 ns (sample point 1..5), solid
+#   PLL_PHI1 / 4, DIV 3     20 MHz  window of 10 ns (1..2), decodes clean; needs the
+#                                   PLL running with PHI1 = 160 MHz (SELCTL = 1001b
+#                                   instead of 0000b below, DIV = 3)
+#   FIRC, DIV 0             24 MHz  no window: nothing decodes
+# The standard plus pads are rated for 25 MHz (Table 69) and give triangle waves
+# above about 20 MHz on a loaded line.
 [[on_trace_start]]
 comment = "MC_CGM MUX_11_CSC.CG: gate TRACE_CLK"
 op = "rmw32"
@@ -103,10 +108,10 @@ tries = 100
 required = true
 
 [[on_trace_start]]
-comment = "MUX_11_DC_0: divider on, DIV = 0 (one atomic write)"
+comment = "MUX_11_DC_0: divider on, DIV = 1 (one atomic write)"
 op = "write32"
 addr = 0x402D85C8
-value = 0x80000000
+value = 0x80010000
 [[on_trace_start]]
 comment = "MUX_11_DIV_UPD_STAT.DIV_STAT == 0: divider took it"
 op = "poll32"
