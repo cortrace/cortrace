@@ -65,10 +65,12 @@ sysclk_hz = 240000000
 # divider (period = (DIV+1) x input; reset value DE = 1, DIV = 0) is written last:
 # it takes a new value only on a running clock, so DIV_STAT stays set while the mux
 # is gated (seen on the chip).
-# UNVERIFIED: whether the pin clock equals TRACE_CLK or half of it (the RM's clock
-# figures draw a /2 after the divider). With the /2, DIV 0 gives 24 MHz on the pin,
-# just under the 25 MHz of the datasheet. Measure TRACECLK at the FPGA
-# (`cortrace fpga health`); use DIV = 1 if the pin clock turns out to be 48 MHz.
+# The pin clock is half of TRACE_CLK (the /2 of the RM's clock figures), measured on
+# the scope: DIV 3 gives 6 MHz and DIV 0 gives 24 MHz on TRACE_ETM_CLKOUT. At 24 MHz
+# the standard plus pads only reach a triangle wave on a bench probe and cable;
+# 6 MHz leaves 6 MB/s, enough for the coverage profile and for the timing profile
+# of a core running at 48 MHz. On the scope the data lines change together with the
+# clock edge, not between the edges.
 [[on_trace_start]]
 comment = "MC_CGM MUX_11_CSC.CG: gate TRACE_CLK"
 op = "rmw32"
