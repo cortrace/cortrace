@@ -359,7 +359,17 @@ int main(int argc, char** argv)
         { "--etm-configr", "TRCCONFIGR", &EtmV4Config::configr },
         { "--etm-trace-id", "TRCTRACEIDR (ATB id; keep --want-stream in step)",
             &EtmV4Config::traceidr },
+        // ETMv3 (Cortex-M3/M4): only read with --etm-version 3.
+        { "--etm-v3-idr", "ETMIDR", &EtmV4Config::v3_idr },
+        { "--etm-v3-ctrl", "ETMCR", &EtmV4Config::v3_ctrl },
+        { "--etm-v3-ccer", "ETMCCER", &EtmV4Config::v3_ccer },
     };
+    program.add_argument("--etm-version")
+        .metavar("N")
+        .scan<'i', int>()
+        .default_value(4)
+        .help("ETM architecture: 4 (ETMv4, Cortex-M7/M33; default) or 3 (ETMv3, Cortex-M3/M4, "
+              "configured with --etm-v3-*)");
     for (const auto& o : etm_opts) {
         char def[16];
         std::snprintf(def, sizeof def, "0x%08x", etm_defaults.*(o.field));
@@ -454,6 +464,8 @@ int main(int argc, char** argv)
     }
 
     cortrace::log::set_level_from_str(program.get("--log-level"));
+    if (program.get("--log-level") == "debug")
+        opencsd_log_errors_to_stderr();
 
     const std::string etm_path = program.get("etm");
     const std::string syms_path = program.get("syms");
@@ -562,6 +574,11 @@ int main(int argc, char** argv)
     EtmV4Config cfg; // Cortex-M7 ETMv4 defaults, overridable with --etm-*
     for (const auto& o : etm_opts)
         cfg.*(o.field) = static_cast<uint32_t>(program.get<long long>(o.name));
+    cfg.etm_version = program.get<int>("--etm-version");
+    if (cfg.etm_version != 3 && cfg.etm_version != 4) {
+        std::fprintf(stderr, "error: --etm-version must be 3 or 4\n");
+        return 2;
+    }
     auto decoder = make_opencsd_decoder(cfg);
     if (!decoder) {
         std::fprintf(stderr, "error: failed to create OpenCSD decoder\n");

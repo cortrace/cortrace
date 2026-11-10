@@ -128,6 +128,25 @@ namespace {
             if (tree_ == C_API_INVALID_TREE_HANDLE)
                 return;
 
+            unsigned char csid = 0;
+            if (cfg.etm_version == 3) {
+                ocsd_etmv3_cfg v3;
+                std::memset(&v3, 0, sizeof v3);
+                v3.reg_idr = cfg.v3_idr;
+                v3.reg_ctrl = cfg.v3_ctrl;
+                v3.reg_ccer = cfg.v3_ccer;
+                v3.reg_trc_id = cfg.traceidr;
+                v3.arch_ver = ARCH_V7;
+                v3.core_prof = profile_CortexM;
+                if (ocsd_dt_create_decoder(
+                        tree_, OCSD_BUILTIN_DCD_ETMV3, OCSD_CREATE_FLG_FULL_DECODER, &v3, &csid)
+                    != OCSD_OK) {
+                    teardown_locked();
+                    return;
+                }
+                finish_setup_locked();
+                return;
+            }
             ocsd_etmv4_cfg ocfg;
             std::memset(&ocfg, 0, sizeof ocfg);
             ocfg.reg_idr0 = cfg.idr0;
@@ -144,19 +163,13 @@ namespace {
             ocfg.arch_ver = ARCH_V7;
             ocfg.core_prof = profile_CortexM;
 
-            unsigned char csid = 0;
             if (ocsd_dt_create_decoder(
                     tree_, OCSD_BUILTIN_DCD_ETMV4I, OCSD_CREATE_FLG_FULL_DECODER, &ocfg, &csid)
                 != OCSD_OK) {
                 teardown_locked();
                 return;
             }
-            if (ocsd_dt_set_gen_elem_outfn(tree_, &OpenCsdDecoder::elem_trampoline, this)
-                != OCSD_OK) {
-                teardown_locked();
-                return;
-            }
-            ok_ = true;
+            finish_setup_locked();
         }
 
         ~OpenCsdDecoder() override
@@ -250,6 +263,18 @@ namespace {
         }
 
     private:
+        // Hooks the element callback up once a protocol decoder exists. Caller
+        // holds tree_mutex().
+        void finish_setup_locked()
+        {
+            if (ocsd_dt_set_gen_elem_outfn(tree_, &OpenCsdDecoder::elem_trampoline, this)
+                != OCSD_OK) {
+                teardown_locked();
+                return;
+            }
+            ok_ = true;
+        }
+
         void teardown_locked()
         {
             if (tree_ != C_API_INVALID_TREE_HANDLE) {
@@ -352,6 +377,12 @@ namespace {
 } // namespace
 
 void opencsd_silence_errors() { ocsd_def_errlog_init(OCSD_ERR_SEV_NONE, 0); }
+
+void opencsd_log_errors_to_stderr()
+{
+    ocsd_def_errlog_init(OCSD_ERR_SEV_ERROR, 1);
+    ocsd_def_errlog_config_output(C_API_MSGLOGOUT_FLG_STDERR, nullptr);
+}
 
 std::unique_ptr<IDecoder> make_opencsd_decoder(const EtmV4Config& cfg)
 {

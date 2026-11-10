@@ -43,6 +43,13 @@ struct EtmV4Config {
     uint32_t idr13 = 0;
     uint32_t configr = 0x00000000;
     uint32_t traceidr = 0x00000002; // ETM trace ID on the ATB
+    // The ETMv3.5 of a Cortex-M3/M4 (e.g. STM32F4) is decoded by OpenCSD's ETMv3 decoder
+    // instead: set etm_version = 3 and the three ETMv3 registers (defaults: Cortex-M4
+    // ETM-M4 r0p1, ETMCR with the port-select bit set). `traceidr` is shared.
+    int etm_version = 4;
+    uint32_t v3_idr = 0x4114f250; // ETMIDR
+    uint32_t v3_ctrl = 0x00000800; // ETMCR
+    uint32_t v3_ccer = 0x18541800; // ETMCCER
 };
 
 // Abstract decoder so the CLI / tests can swap in a fake without OpenCSD.
@@ -101,6 +108,9 @@ std::unique_ptr<IDecoder> make_opencsd_decoder(const EtmV4Config& cfg);
 // then still returned to the caller as element kinds, just not logged by
 // OpenCSD.
 void opencsd_silence_errors();
+
+// Print libopencsd error messages (packet errors and the like) to stderr; for triage.
+void opencsd_log_errors_to_stderr();
 
 // OpenCSD's own Thumb instruction decoder (the one its ETMv4 decoder follows
 // the program with), set up for a Cortex-M ETMv4 like make_opencsd_decoder.
