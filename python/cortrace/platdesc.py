@@ -22,7 +22,7 @@ USER_DIR = os.path.join(os.path.expanduser("~"), ".config", "cortrace", "platfor
 SHARE_DIR = "/usr/share/cortrace/platforms"
 SOURCE_DIR = os.path.join(_REPO, "platforms")
 
-BLOCKS = ("etm", "dwt", "itm", "tpiu", "tsgen")
+BLOCKS = ("etm", "dwt", "itm", "tpiu")  # `tsgen` is optional: not every chip has one
 # Between the ETM/ITM and the TPIU: funnels and ETFs. A chip with one funnel and
 # one ETF names them (`cstf`, `etf`); a chip with more lists the stages in
 # `[[coresight.path]]`.
@@ -74,7 +74,9 @@ def _stages(path, blocks):
     `[[coresight.path]]` entries have `kind` ("funnel" or "etf") and `base`; a
     funnel may also have `ports` (bit mask of the inputs to enable, default
     0x3) and `itm_priority` (give the ITM input priority, default true). Without
-    a `path`, the funnel `cstf` and the ETF `etf` make the two stages.
+    a `path`, the funnel `cstf` and the ETF `etf` make the two stages. An empty
+    `path = []` means the ETM and the ITM feed the TPIU directly (Cortex-M4 parts
+    such as the STM32F4).
     """
     if "path" not in blocks:
         return [
@@ -87,7 +89,7 @@ def _stages(path, blocks):
             {"kind": "etf", "base": blocks["etf"]},
         ]
     stages = []
-    for i, stage in enumerate(blocks["path"], start=1):
+    for i, stage in enumerate(blocks["path"] or [], start=1):
         if stage.get("kind") not in STAGE_KINDS or "base" not in stage:
             raise PlatformError(
                 f"{path}: coresight.path #{i} needs kind "
@@ -97,8 +99,6 @@ def _stages(path, blocks):
         if stage["kind"] == "funnel":
             stages[-1].setdefault("ports", 0x3)
             stages[-1].setdefault("itm_priority", True)
-    if not stages:
-        raise PlatformError(f"{path}: coresight.path is empty")
     return stages
 
 
@@ -130,6 +130,14 @@ def load(name_or_path):
     trace.setdefault("etm_trace_id", 2)
     trace.setdefault("itm_trace_id", 1)
     trace.setdefault("max_width", 4)
+    trace.setdefault("default_width", trace["max_width"])
+    trace.setdefault(
+        "etm_version", 4
+    )  # 3: ETMv3.5 of a Cortex-M3/M4, 4: ETMv4 of an M7
+    if not 1 <= trace["default_width"] <= trace["max_width"]:
+        raise PlatformError(f"{path}: trace.default_width must be within 1..max_width")
+    if trace["etm_version"] not in (3, 4):
+        raise PlatformError(f"{path}: trace.etm_version must be 3 or 4")
     data.setdefault("clocks", {})
     data.setdefault("on_trace_start", [])
     _check_ops(path, data["on_trace_start"])

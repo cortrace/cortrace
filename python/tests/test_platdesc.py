@@ -31,7 +31,13 @@ def write(tmp_path, text, name="chip.toml"):
 def test_the_bundled_platform_loads_by_name():
     plat = platdesc.load("stm32h743")
     assert plat["coresight"]["tpiu"] == 0x5C015000
-    assert plat["trace"] == {"etm_trace_id": 2, "itm_trace_id": 1, "max_width": 4}
+    assert plat["trace"] == {
+        "etm_trace_id": 2,
+        "itm_trace_id": 1,
+        "max_width": 4,
+        "default_width": 4,
+        "etm_version": 4,
+    }
     assert plat["clocks"]["tsgen_hz"] == 75000000
     assert plat["on_trace_start"][0]["op"] == "rmw32"
 
@@ -120,13 +126,28 @@ def test_a_bad_stage_is_rejected(tmp_path, stage):
         platdesc.load(write(tmp_path, text))
 
 
-def test_an_empty_path_is_rejected(tmp_path):
-    with pytest.raises(platdesc.PlatformError, match="path is empty"):
-        platdesc.load(
-            write(
-                tmp_path, NO_CHAIN.replace("[coresight]\n", "[coresight]\npath = []\n")
-            )
-        )
+def test_an_empty_path_sends_the_trace_straight_to_the_tpiu(tmp_path):
+    text = NO_CHAIN.replace("[coresight]\n", "[coresight]\npath = []\n")
+    assert platdesc.load(write(tmp_path, text))["coresight"]["path"] == []
+
+
+def test_the_timestamp_generator_is_optional(tmp_path):
+    text = MINIMAL.replace("tsgen = 0x7000\n", "")
+    assert "tsgen" not in platdesc.load(write(tmp_path, text))["coresight"]
+
+
+@pytest.mark.parametrize("version", [2, 5])
+def test_the_etm_version_is_3_or_4(tmp_path, version):
+    text = MINIMAL + f"[trace]\netm_version = {version}\n"
+    with pytest.raises(platdesc.PlatformError, match="etm_version must be 3 or 4"):
+        platdesc.load(write(tmp_path, text))
+
+
+@pytest.mark.parametrize("width", [0, 5])
+def test_the_default_width_is_within_the_maximum(tmp_path, width):
+    text = MINIMAL + f"[trace]\ndefault_width = {width}\n"
+    with pytest.raises(platdesc.PlatformError, match="default_width"):
+        platdesc.load(write(tmp_path, text))
 
 
 def test_steps_are_checked(tmp_path):

@@ -149,6 +149,63 @@ def arm_etm(regs, base, trace_id, profile="timing", stall_level=0):
     regs.write(base + 0x004, 1)  # TRCPRGCTLR: on
 
 
+# ETMv3.5 of the Cortex-M3/M4 (ETM-M4 TRM, ARM DDI 0440C): a flat register file at the
+# ETM base. There is no cycle counter in the M4's ETM, so the "timing" profile only
+# adds the timestamp packets and the "coverage" profile is the same flow without them.
+ETM3_CR = 0x000  # main control
+ETM3_TRIGGER = 0x008
+ETM3_SR = 0x010  # bit 1: programming bit as seen by the ETM
+ETM3_TEEVR = 0x020  # TraceEnable event
+ETM3_TECR1 = 0x024
+ETM3_FFLR = 0x028  # FIFOFULL level
+ETM3_TSEVR = 0x1F8
+ETM3_TRACEIDR = 0x200
+ETM3_CR_PROGRAMMING = 1 << 10
+ETM3_CR_PORT_SELECT = 1 << 11  # must be set for trace output
+ETM3_CR_STALL = 1 << 7
+ETM3_CR_TIMESTAMP = 1 << 28
+ETM3_EVENT_TRUE = 0x6F  # resource "always true"
+ETM3_EVENT_NEVER = 0x406F  # NOT true
+ETM3_FIFOFULL_LEVEL = 8  # bytes free in the FIFO at which the core is stalled
+ETM3_PROFILES = {"timing": ETM3_CR_TIMESTAMP, "coverage": 0}
+
+
+def _etm3_enter_programming(regs, base):
+    regs.unlock(base)
+    regs.write(base + ETM3_CR, ETM3_CR_PROGRAMMING)  # also powers the ETM up
+    regs.write(base + ETM3_CR, ETM3_CR_PROGRAMMING)  # written twice, as the TRM allows
+    regs.poll(base + ETM3_SR, 0x2, 100)
+
+
+def arm_etm_v3(regs, base, trace_id, profile="timing", stall_level=0):
+    """Program the ETMv3.5 to trace every instruction of the core. `stall_level`
+    0 never slows the core; 1..3 stall it when the FIFO is nearly full (the M4's
+    ETM has one threshold, so they are the same)."""
+    if profile not in ETM3_PROFILES:
+        raise ArmError(f"unknown ETM profile {profile!r} ({', '.join(ETM3_PROFILES)})")
+    if not 0 <= stall_level <= 3:
+        raise ArmError(f"ETM stall level {stall_level} not supported (0..3)")
+    _etm3_enter_programming(regs, base)
+    regs.write(base + ETM3_TRACEIDR, trace_id)
+    regs.write(base + ETM3_TRIGGER, ETM3_EVENT_NEVER)
+    regs.write(base + ETM3_TEEVR, ETM3_EVENT_TRUE)  # TraceEnable: always
+    regs.write(base + ETM3_TECR1, 0)  # not gated by the start/stop block
+    regs.write(base + ETM3_FFLR, ETM3_FIFOFULL_LEVEL)
+    regs.write(
+        base + ETM3_TSEVR, ETM3_EVENT_NEVER
+    )  # timestamps at synchronisation only
+    control = ETM3_CR_PORT_SELECT | ETM3_PROFILES[profile]
+    if stall_level:
+        control |= ETM3_CR_STALL
+    regs.write(base + ETM3_CR, control | ETM3_CR_PROGRAMMING)
+    regs.write(base + ETM3_CR, control)  # clearing the programming bit starts the trace
+
+
+def hold_etm_off_v3(regs, base):
+    """Leave the ETMv3 in its programming state, where it does not trace."""
+    _etm3_enter_programming(regs, base)
+
+
 def hold_etm_off(regs, base):
     """Leave the ETM disabled. It has to be written: a system reset does not
     reset the debug domain, so an ETM enabled by an earlier session would
@@ -235,15 +292,21 @@ def arm(
     log("chip steps:")
     run_chip_steps(regs, platform["on_trace_start"], log)
     regs.rmw(DEMCR, set_bits=DEMCR_TRCENA)
-    regs.rmw(blocks["tsgen"] + 0x000, set_bits=0x1)  # CNTCR.EN: timestamps run
+    if "tsgen" in blocks:
+        regs.rmw(blocks["tsgen"] + 0x000, set_bits=0x1)  # CNTCR.EN: timestamps run
     arm_tpiu(regs, blocks["tpiu"], width)
     for stage in blocks["path"]:
         if stage["kind"] == "funnel":
             arm_funnel(regs, stage["base"], stage["ports"], stage["itm_priority"])
         else:
             arm_etf(regs, stage["base"])
-    if etm:
+    v3 = trace.get("etm_version", 4) == 3
+    if etm and v3:
+        arm_etm_v3(regs, blocks["etm"], trace["etm_trace_id"], profile, stall_level)
+    elif etm:
         arm_etm(regs, blocks["etm"], trace["etm_trace_id"], profile, stall_level)
+    elif v3:
+        hold_etm_off_v3(regs, blocks["etm"])
     else:
         hold_etm_off(regs, blocks["etm"])
     arm_itm(regs, blocks["itm"], trace["itm_trace_id"])

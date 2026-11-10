@@ -58,7 +58,12 @@ def build_parser():
         metavar="ADDR",
         help="watch this address instead of asking the OS plugin (repeatable)",
     )
-    ap.add_argument("--width", type=int, default=4, help="TPIU port width in bits")
+    ap.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="TPIU port width in bits (default: the platform's trace.default_width, else 4)",
+    )
     ap.add_argument(
         "--no-etm", action="store_true", help="arm only the ITM/DWT, keep the ETM off"
     )
@@ -140,7 +145,7 @@ def main(argv=None):
             probe,
             platform,
             watches,
-            width=args.width,
+            width=args.width or platform["trace"]["default_width"],
             etm=not args.no_etm,
             profile=args.profile,
             stall_level=args.etm_stall,

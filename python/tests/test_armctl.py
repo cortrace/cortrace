@@ -31,7 +31,7 @@ def base_args(*extra):
 def test_list_shows_the_platforms(capsys):
     assert armctl.main(["--list"]) == 0
     names = [line.split("\t")[0] for line in capsys.readouterr().out.splitlines()]
-    assert names == ["mimxrt1176", "s32k344", "s32k358", "stm32h743"]
+    assert names == ["mimxrt1176", "s32k344", "s32k358", "stm32f429", "stm32h743"]
 
 
 def test_arms_the_variable_the_os_plugin_names(tmp_path, probe, capsys):
@@ -81,6 +81,22 @@ def test_coverage_profile_flag(probe):
     assert armctl.main(base_args("--os", "none", "--profile", "coverage")) == 0
     assert (0xE0041010, 0x1) in probe.writes
     assert (0xE0041010, 0x810) not in probe.writes
+
+
+def test_the_port_width_defaults_to_the_platforms_and_can_be_overridden(probe):
+    probe.regs.update({0xE0041010: 0x2, 0x40013820: 0x100})
+    args = [
+        "--platform",
+        "stm32f429",
+        "--probe-telnet",
+        "127.0.0.1:4448",
+        "--os",
+        "none",
+    ]
+    assert armctl.main(args) == 0
+    assert (0xE0040004, 0x2) in probe.writes  # the platform asks for 2 bits
+    assert armctl.main([*args, "--width", "4"]) == 0
+    assert (0xE0040004, 0x8) in probe.writes
 
 
 def test_dwt_events_flag(probe):
