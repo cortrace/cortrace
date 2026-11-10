@@ -248,6 +248,7 @@ cortrace tcbmap --elf nuttx --telnet 127.0.0.1:4444 --out tcbmap.txt
 Cortex-M3/M4 带的是 ETMv3.5，不是 ETMv4：加 `--etm-version 3`，寄存器值用 `--etm-v3-idr`（ETMIDR）、
 `--etm-v3-ctrl`（ETMCR）、`--etm-v3-ccer`（ETMCCER）给，默认值是 STM32F429 的（见 [13-stm32f429.md](13-stm32f429.md)）。
 ETMv3 的 M4 没有周期计数器，`--cycle-time` 和 `--stats-out` 在这类目标上没有数据。
+时间基用 `--raw --traceclk-hz <TRACECLK>`：FPGA 每个 TRACECLK 周期送一个原始字节，字节在抓取里的位置就是时间（见 13 文档）。
 
 ### 4.2 带 note 的抓取，以及和 NuttX note 合并
 

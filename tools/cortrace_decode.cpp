@@ -287,6 +287,14 @@ int main(int argc, char** argv)
     program.add_argument("--time")
         .metavar("time.bin")
         .help("FPGA ETF-egress ns-per-ETM-byte time base");
+    program.add_argument("--traceclk-hz")
+        .metavar("HZ")
+        .scan<'g', double>()
+        .default_value(0.0)
+        .help("with --raw: the FPGA streams one capture byte per TRACECLK cycle, so a byte's place "
+              "in the capture is its time. Give the TRACECLK frequency and every ETM byte gets "
+              "its wall-clock ns (the time the byte left the chip's trace port) as the Perfetto "
+              "time base. For targets whose ETM has no cycle counter or timestamps.");
     program.add_argument("--etm-time")
         .flag()
         .help("use the ETM global timestamp (execution time) as the Perfetto time base");
@@ -529,6 +537,11 @@ int main(int argc, char** argv)
     const int want_stream = program.get<int>("--want-stream");
     const int nx_switch_stream = program.get<int>("--switch-stream");
     const bool nx_enabled = nx_switch_stream >= 0;
+    const double traceclk_hz = program.get<double>("--traceclk-hz");
+    if (traceclk_hz > 0.0 && !raw_input) {
+        std::fprintf(stderr, "error: --traceclk-hz needs --raw\n");
+        return 2;
+    }
     const uint8_t nx_comp = static_cast<uint8_t>(program.get<int>("--watch-comp"));
     const uint32_t nx_pid_off = static_cast<uint32_t>(program.get<int>("--nx-tcb-pid-off"));
     const uint32_t nx_entry_off = static_cast<uint32_t>(program.get<int>("--nx-tcb-entry-off"));
@@ -728,7 +741,7 @@ int main(int argc, char** argv)
         int async_count = 0;
         std::size_t frames = 0;
 
-        if (nx_enabled) {
+        if (nx_enabled || traceclk_hz > 0.0) {
             // Multi-stream: demux ETM (want_stream) and the DWT stream in one
             // pass so both share the assembled-byte space (-> one timeline).
             MultiDeframeResult mr
@@ -740,6 +753,19 @@ int main(int argc, char** argv)
             if (eit != mr.streams.end()) {
                 etm_bytes = eit->second;
                 etm_src = mr.src_index[want_stream];
+            }
+            if (traceclk_hz > 0.0) {
+                // One capture byte per TRACECLK cycle; an assembled TPIU byte spans
+                // 4/width of them (width 4: 1, width 2: 2, width 1: 4).
+                const double ns_per_assembled
+                    = 1e9 * (4.0 / static_cast<double>(phase.width)) / traceclk_hz;
+                std::vector<uint64_t> ns(etm_src.size());
+                for (std::size_t i = 0; i < ns.size(); ++i)
+                    ns[i]
+                        = static_cast<uint64_t>(static_cast<double>(etm_src[i]) * ns_per_assembled);
+                tb.assign(std::move(ns));
+                std::fprintf(stderr, "time base: TRACECLK %.3f MHz, %.1f ns per assembled byte\n",
+                    traceclk_hz / 1e6, ns_per_assembled);
             }
             auto dit = mr.streams.find(nx_switch_stream);
             if (dit != mr.streams.end()) {

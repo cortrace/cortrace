@@ -40,6 +40,15 @@ TEST(timebase_lookup_and_clamp)
     CHECK_EQ((long)tb.ns_for(99), 400L);
 }
 
+TEST(timebase_assign_replaces_the_table)
+{
+    TimeBase tb;
+    CHECK(tb.empty());
+    tb.assign({ 0, 24, 48 });
+    CHECK_EQ(tb.size(), 3u);
+    CHECK_EQ(tb.ns_for(1), 24u);
+    CHECK_EQ(tb.ns_for(100), 48u); // past the end: the last entry
+}
 TEST(timebase_load_missing_throws)
 {
     TimeBase tb;

@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cortrace {
@@ -24,6 +25,8 @@ public:
     // Throws std::runtime_error if the file cannot be opened.
     std::size_t load(const std::string& path);
 
+    // Use `ns` (one value per ETM byte) as the table.
+    void assign(std::vector<uint64_t> ns) { ns_ = std::move(ns); }
     bool empty() const { return ns_.empty(); }
     std::size_t size() const { return ns_.size(); }
 
