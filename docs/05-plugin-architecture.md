@@ -68,8 +68,8 @@ flowchart TD
 
 `platforms/<名字>.toml`，由 `cortrace/platdesc.py` 加载，`cortrace/trace_arm.py` 执行。查找顺序：`$CORTRACE_PLATFORM_PATH`、`~/.config/cortrace/platforms`、`/usr/share/cortrace/platforms`、源码树的 `platforms/`。
 
-- `[coresight]`：ETM、DWT、ITM、TPIU、TSGEN 的基地址（必填）。ETM/ITM 到 TPIU 之间的漏斗和 ETF 有两种写法：一个漏斗加一个 ETF 写成 `cstf`、`etf`；更多级用 `[[coresight.path]]`，每项 `kind`（`funnel` 或 `etf`）和 `base`，漏斗可再给 `ports`（要打开的输入端口掩码，默认 0x3）和 `itm_priority`（默认 true）。按列出的顺序编程，建议从靠近 TPIU 的一端写起。S32K3xx 有两级漏斗和两个 ETF，见 [06-s32k3xx.md](06-s32k3xx.md)。
-- `[trace]`：ETM 与 ITM/DWT 的 trace id、最大端口宽度。
+- `[coresight]`：ETM、DWT、ITM、TPIU 的基地址（必填），TSGEN 可省略（没有时不布防时间戳发生器）。ETM/ITM 到 TPIU 之间的漏斗和 ETF 有两种写法：一个漏斗加一个 ETF 写成 `cstf`、`etf`；更多级用 `[[coresight.path]]`，每项 `kind`（`funnel` 或 `etf`）和 `base`，漏斗可再给 `ports`（要打开的输入端口掩码，默认 0x3）和 `itm_priority`（默认 true）。按列出的顺序编程，建议从靠近 TPIU 的一端写起。S32K3xx 有两级漏斗和两个 ETF，见 [06-s32k3xx.md](06-s32k3xx.md)。没有漏斗和 ETF 的芯片写 `path = []`，ETM 和 ITM 直接进 TPIU（STM32F429，见 [13-stm32f429.md](13-stm32f429.md)）。
+- `[trace]`：ETM 与 ITM/DWT 的 trace id、最大端口宽度 `max_width`、`cortrace arm` 不给 `--width` 时用的 `default_width`（默认等于 `max_width`）、ETM 架构 `etm_version`（4 是 Cortex-M7/M33 的 ETMv4，默认；3 是 Cortex-M3/M4 的 ETMv3.5）。
 - `[clocks]`：板级默认时钟，目前只是记录。
 - `[[on_trace_start]]`：芯片专有步骤，三种操作：`write32`、`rmw32`（`set`/`clear`）、`poll32`（`mask`、`tries`，默认超时只打印提示并继续，`required = true` 才报错；给 `value` 时等 `(寄存器 & mask) == value`，不给则等 `mask` 里任一位置位）。
 
