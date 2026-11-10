@@ -1,0 +1,83 @@
+# STM32F429 (Cortex-M4, ETMv3.5): 4-bit parallel trace on PE2 (TRACECK) and PE3..PE6.
+# Tested on the STM32F429I-DISC1.
+#
+# The M4 has no trace funnel, no ETF and no timestamp generator: the ETM and the ITM
+# feed the TPIU (0xE0040000) directly. Read off the chip: the ROM table lists the SCS,
+# DWT, FPB, ITM, TPIU and ETM only. The ETM is the ETMv3.5 of the Cortex-M4 (ETMIDR
+# 0x4114F250), not an ETMv4: cortrace-decode needs `--etm-version 3`.
+# Register names: RM0090; DBGMCU_CR is at 0xE0042004.
+name = "stm32f429"
+description = "STM32F429 (Cortex-M4, ETMv3.5), parallel trace on PE2..PE6"
+core = "cortex-m4"
+[coresight]
+etm = 0xE0041000
+dwt = 0xE0001000
+itm = 0xE0000000
+tpiu = 0xE0040000
+path = []           # ETM and ITM go straight into the TPIU
+[trace]
+etm_version = 3
+etm_trace_id = 2
+itm_trace_id = 1
+max_width = 4
+# 4-bit capture of this board loses the second byte of some TPIU pairs, so the
+# trace does not decode; the 2-bit port (TRACED0..1) decodes cleanly.
+default_width = 2
+[clocks]
+# The template firmware runs at 60 MHz from the 8 MHz crystal (TRACECLK = HCLK/2 = 30 MHz;
+# the bare board has no series resistors on the trace pins, so stay well below 80 MHz).
+sysclk_hz = 60000000
+# The very high speed pads need the I/O compensation cell: SYSCFG clock, then CMP_EN,
+# then wait for READY (RM0090, SYSCFG_CMPCR).
+[[on_trace_start]]
+comment = "RCC_APB2ENR.SYSCFGEN"
+op = "rmw32"
+addr = 0x40023844
+set = 0x4000
+[[on_trace_start]]
+comment = "SYSCFG_CMPCR.CMP_EN"
+op = "rmw32"
+addr = 0x40013820
+set = 0x1
+[[on_trace_start]]
+comment = "wait for SYSCFG_CMPCR.READY"
+op = "poll32"
+addr = 0x40013820
+mask = 0x100
+tries = 100
+[[on_trace_start]]
+comment = "RCC_AHB1ENR.GPIOEEN"
+op = "rmw32"
+addr = 0x40023830
+set = 0x10
+[[on_trace_start]]
+comment = "GPIOE_MODER: PE2..PE6 alternate function"
+op = "rmw32"
+addr = 0x40021000
+set = 0x2AA0
+clear = 0x3FF0
+[[on_trace_start]]
+comment = "GPIOE_OTYPER: PE2..PE6 push-pull"
+op = "rmw32"
+addr = 0x40021004
+clear = 0x7C
+[[on_trace_start]]
+comment = "GPIOE_OSPEEDR: PE2..PE6 very high speed"
+op = "rmw32"
+addr = 0x40021008
+set = 0x3FF0
+[[on_trace_start]]
+comment = "GPIOE_PUPDR: PE2..PE6 no pull"
+op = "rmw32"
+addr = 0x4002100C
+clear = 0x3FF0
+[[on_trace_start]]
+comment = "GPIOE_AFRL: PE2..PE6 AF0 (TRACE)"
+op = "rmw32"
+addr = 0x40021020
+clear = 0x0FFFFF00
+[[on_trace_start]]
+comment = "DBGMCU_CR: TRACE_IOEN | TRACE_MODE = synchronous 4 bit | DBG_STANDBY/STOP/SLEEP"
+op = "rmw32"
+addr = 0xE0042004
+set = 0xE7
