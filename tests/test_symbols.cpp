@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 #include "cortrace/symbols.hpp"
 #include "test_framework.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <stdexcept>
 #include <string>

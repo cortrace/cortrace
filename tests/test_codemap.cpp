@@ -6,6 +6,7 @@
 #include "elf_fixture.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>

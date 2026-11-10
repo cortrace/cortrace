@@ -9,6 +9,7 @@
 #include "cortrace/perfetto_writer.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <map>

@@ -4,6 +4,7 @@
 #include "cortrace/coverage.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <sstream>

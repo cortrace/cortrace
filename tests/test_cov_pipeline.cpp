@@ -5,6 +5,7 @@
 #include "fake_etm.hpp"
 #include "test_framework.hpp"
 #include "tpiu_fixture.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <sstream>

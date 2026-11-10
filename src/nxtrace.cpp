@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 #include "cortrace/nxtrace.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

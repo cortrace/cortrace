@@ -4,6 +4,7 @@
 #include "cortrace/nxtrace.hpp"
 #include "test_framework.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>

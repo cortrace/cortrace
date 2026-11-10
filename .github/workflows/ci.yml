@@ -9,7 +9,9 @@ on:
 jobs:
   format:
     name: clang-format (WebKit)
-    runs-on: ubuntu-latest
+    # Pinned: clang-format changes its output between major versions, and the
+    # sources are formatted with the 22.04 one (14), the same as the local hook.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: Install clang-format
