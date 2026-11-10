@@ -10,6 +10,10 @@
 
 namespace cortrace {
 
+// The C++ name for a mangled symbol (`_ZN8touchgfx3HAL8endFrameEv` becomes
+// `touchgfx::HAL::endFrame()`). A name that is not an Itanium-ABI mangled name,
+// or that cannot be demangled, is returned unchanged.
+std::string demangle_name(const std::string& name);
 // A sorted function symbol table. Built from `nm`-style entries (address, name)
 // for text/weak symbols. Provides address->function lookup and an exact
 // function-entry test used by the call-stack machine to confirm a callee.
@@ -35,8 +39,9 @@ public:
 
     // Parse an `nm` output file (lines: "<hex-addr> <type> <name>"), keeping
     // only text/weak symbols (t/T/w/W). Returns number of symbols added.
+    // With `demangle`, C++ symbols are stored under their demangled names.
     // Throws std::runtime_error if the file cannot be opened.
-    std::size_t load_nm(const std::string& path);
+    std::size_t load_nm(const std::string& path, bool demangle = false);
 
     std::size_t size() const { return syms_.size(); }
     bool empty() const { return syms_.empty(); }

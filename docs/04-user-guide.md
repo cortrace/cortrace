@@ -250,6 +250,8 @@ Cortex-M3/M4 带的是 ETMv3.5，不是 ETMv4：加 `--etm-version 3`，寄存�
 ETMv3 的 M4 没有周期计数器，`--cycle-time` 和 `--stats-out` 在这类目标上没有数据。
 时间基用 `--raw --traceclk-hz <TRACECLK>`：FPGA 每个 TRACECLK 周期送一个原始字节，字节在抓取里的位置就是时间（见 13 文档）。
 
+### C++ 符号
+`cortrace-decode` 和 `cortrace-prof` 把 C++ 符号还原成可读的名字（`_ZN8touchgfx3HAL8endFrameEv` 显示为 `touchgfx::HAL::endFrame()`），Perfetto、统计、折叠栈和覆盖摘要里都是还原后的名字。C 符号和还原不了的名字不变。要看原始的 mangled 名字，加 `--no-demangle`。按函数名过滤或查找（比如 `cortrace stats` 里的函数名）时用还原后的名字，带参数列表的完整形式。
 ### 4.2 带 note 的抓取，以及和 NuttX note 合并
 
 **目标侧**：NuttX 把调度 note 写到一个 ITM 刺激端口，和 ETM、DWT 共用同一个 TPIU（上游开

@@ -295,6 +295,10 @@ int main(int argc, char** argv)
               "in the capture is its time. Give the TRACECLK frequency and every ETM byte gets "
               "its wall-clock ns (the time the byte left the chip's trace port) as the Perfetto "
               "time base. For targets whose ETM has no cycle counter or timestamps.");
+    program.add_argument("--no-demangle")
+        .flag()
+        .help("keep C++ symbols mangled (default: show demangled names, e.g. "
+              "touchgfx::HAL::endFrame())");
     program.add_argument("--etm-time")
         .flag()
         .help("use the ETM global timestamp (execution time) as the Perfetto time base");
@@ -563,7 +567,7 @@ int main(int argc, char** argv)
 
     SymbolTable syms;
     try {
-        std::size_t n = syms.load_nm(syms_path);
+        std::size_t n = syms.load_nm(syms_path, !program.get<bool>("--no-demangle"));
         std::fprintf(stderr, "loaded %zu function symbols\n", n);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());

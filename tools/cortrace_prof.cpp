@@ -59,6 +59,9 @@ int main(int argc, char** argv)
                             "lateness of a periodic exception, spread of basic blocks.");
     program.add_argument("--raw-in").required().metavar("FILE").help("raw capture (cortrace-grab)");
     program.add_argument("--elf").required().help("firmware ELF (the code the trace ran)");
+    program.add_argument("--no-demangle")
+        .flag()
+        .help("keep C++ symbols mangled (default: show demangled names)");
     program.add_argument("--syms").required().metavar("FILE").help(
         "`nm -n` of the ELF (function names)");
     program.add_argument("--out").required().metavar("profile.json").help("the profile");
@@ -137,7 +140,7 @@ int main(int argc, char** argv)
 
     SymbolTable syms;
     try {
-        if (syms.load_nm(program.get("--syms")) == 0) {
+        if (syms.load_nm(program.get("--syms"), !program.get<bool>("--no-demangle")) == 0) {
             std::fprintf(
                 stderr, "error: no function symbols in %s\n", program.get("--syms").c_str());
             return 2;

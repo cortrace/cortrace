@@ -126,3 +126,32 @@ TEST(symbols_load_nm_empty_file_adds_nothing)
     CHECK(t.empty());
     std::remove(path.c_str());
 }
+
+TEST(symbols_demangle_name)
+{
+    using cortrace::demangle_name;
+    CHECK_EQ(
+        demangle_name("_ZN8touchgfx3HAL8endFrameEv"), std::string("touchgfx::HAL::endFrame()"));
+    CHECK_EQ(demangle_name("_ZNK8touchgfx5Image4drawERKNS_4RectE"),
+        std::string("touchgfx::Image::draw(touchgfx::Rect const&) const"));
+    CHECK_EQ(demangle_name("_Z4leafj"), std::string("leaf(unsigned int)"));
+    // not mangled, or not a valid mangled name: unchanged
+    CHECK_EQ(demangle_name("SysTick_Handler"), std::string("SysTick_Handler"));
+    CHECK_EQ(demangle_name("_start"), std::string("_start"));
+    CHECK_EQ(demangle_name("_Zbroken"), std::string("_Zbroken"));
+    CHECK_EQ(demangle_name(""), std::string());
+}
+TEST(symbols_load_nm_demangles_on_request)
+{
+    const std::string path = cortrace_test::temp_path("demangle.nm");
+    FILE* f = std::fopen(path.c_str(), "w");
+    std::fputs("08000100 T _ZN8touchgfx3HAL8endFrameEv\n08000200 T main\n", f);
+    std::fclose(f);
+    SymbolTable mangled, plain;
+    CHECK_EQ(mangled.load_nm(path, true), 2u);
+    CHECK_EQ(plain.load_nm(path), 2u);
+    CHECK_EQ(mangled.function_at(0x08000104), std::string("touchgfx::HAL::endFrame()"));
+    CHECK_EQ(mangled.function_at(0x08000200), std::string("main"));
+    CHECK_EQ(plain.function_at(0x08000104), std::string("_ZN8touchgfx3HAL8endFrameEv"));
+    std::remove(path.c_str());
+}
