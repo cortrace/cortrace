@@ -299,6 +299,11 @@ int main(int argc, char** argv)
         .flag()
         .help("keep C++ symbols mangled (default: show demangled names, e.g. "
               "touchgfx::HAL::endFrame())");
+    program.add_argument("--allow-fatal-restart")
+        .flag()
+        .help("on a fatal libopencsd response reset the protocol decoder and carry on at the next "
+              "synchronisation packet instead of stopping; for captures that lost data "
+              "(triage: the elements around each gap are not trustworthy)");
     program.add_argument("--etm-time")
         .flag()
         .help("use the ETM global timestamp (execution time) as the Perfetto time base");
@@ -601,6 +606,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "error: failed to create OpenCSD decoder\n");
         return 1;
     }
+    decoder->set_restart_on_fatal(program.get<bool>("--allow-fatal-restart"));
     const bool mem_ok = elf_path.empty() ? decoder->add_memory_image(mem_base, mem_path)
                                          : decoder->add_elf(elf_path);
     if (!mem_ok) {
@@ -884,6 +890,9 @@ int main(int argc, char** argv)
         f = nullptr;
     }
     decoder->flush();
+    if (decoder->restarts() > 0)
+        std::fprintf(
+            stderr, "  decoder restarts    : %zu (--allow-fatal-restart)\n", decoder->restarts());
     machine.finish();
 
     const StackMetrics& m = machine.metrics();

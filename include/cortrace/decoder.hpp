@@ -90,6 +90,12 @@ public:
     // Feed `len` bytes of deframed ETMv4 stream. May be called repeatedly.
     // Returns false on a fatal decode response.
     virtual bool process(const uint8_t* data, std::size_t len) = 0;
+    // For captures that lost data (a TPIU port too narrow for the program): after a fatal
+    // decode response, reset the protocol decoder and go on, it then looks for the next
+    // synchronisation packet. The elements around the gap are not trustworthy. Default: off.
+    virtual void set_restart_on_fatal(bool enable) { (void)enable; }
+    // Number of such restarts so far.
+    virtual std::size_t restarts() const { return 0; }
 
     // Signal end-of-trace so the decoder flushes any pending element.
     virtual void flush() = 0;

@@ -244,6 +244,16 @@ namespace {
                     = ocsd_dt_process_data(tree_, OCSD_OP_DATA, index_ + consumed,
                         static_cast<uint32_t>(len - consumed), data + consumed, &used);
                 consumed += used;
+                if (OCSD_DATA_RESP_IS_FATAL(r) && restart_on_fatal_) {
+                    // drop the byte it choked on, reset, and let the packet processor hunt for the
+                    // next synchronisation packet
+                    restarts_++;
+                    if (used == 0)
+                        consumed++;
+                    ocsd_dt_process_data(
+                        tree_, OCSD_OP_RESET, index_ + consumed, 0, nullptr, nullptr);
+                    continue;
+                }
                 if (OCSD_DATA_RESP_IS_FATAL(r)) {
                     CT_LOG_ERROR("opencsd fatal decode response at byte %llu (resp=%d)",
                         static_cast<unsigned long long>(index_ + consumed), static_cast<int>(r));
@@ -256,6 +266,8 @@ namespace {
             return true;
         }
 
+        void set_restart_on_fatal(bool enable) override { restart_on_fatal_ = enable; }
+        std::size_t restarts() const override { return restarts_; }
         void flush() override
         {
             if (ok_)
@@ -372,6 +384,8 @@ namespace {
         ElementSink sink_;
         std::size_t index_ = 0;
         bool ok_ = false;
+        bool restart_on_fatal_ = false;
+        std::size_t restarts_ = 0;
     };
 
 } // namespace
