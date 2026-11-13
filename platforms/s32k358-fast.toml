@@ -1,0 +1,153 @@
+# NXP S32K358 (Cortex-M7_0 of the 289 BGA) on the S32K3X8EVB-Q289 with the trace
+# taken from the FAST pads: PTC2 (TRACE_ETM_CLKOUT), PTD7, PTD12, PTD11, PTD10
+# (TRACE_ETM_D0..D3), which are the QSPI flash's pins on this board. They are
+# reached by fly wires from the MCU side of the 33 ohm series resistors R713 (CLK),
+# R746 (D0), R747 (D1), R715 (D2), R714 (D3) (or from the flash-side TPAD34, 32, 33,
+# 31, 40). The J50 pads of platforms/s32k358.toml are left alone (do not use both).
+#
+# Same CoreSight blocks, clocks and trace clock mux as s32k358.toml; only the pads
+# differ. The pads sit on VDD_HV_B (jumpers J30, J31 on 1-2 = 3.3 V, the default).
+# The pin functions are those of the S32K344 workbook (CLK and D0 ALT6, D1..D3 ALT4).
+#
+# Measured on the board (test program in SRAM, 1 kHz SysTick work, decoded against
+# its ELF): the fast pads trace, and like the standard plus pads they change the data
+# WITH the clock edge, so `calibrate --mode direct` finds no window on the IDELAY taps and the
+# FPGA has to use its oversampling capture (`cortrace fpga ctrl oversample on --dly N
+# --vote`, 5 ns per step):
+#   12 MHz on the pin (this file, FIRC DIV 1)  dly 3: 10,068 calls, balanced, clean
+#                                              (the other dly values were not decoded)
+#   24 MHz on the pin (FIRC DIV 0)             dly 1 and dly 5 decode clean (the two
+#                                              data eyes); 0, 2, 3, 4 do not
+# The standard plus pads of s32k358.toml had no window at 24 MHz.
+# The trace clock stays on FIRC with DIV 1 here; write MUX_11_DC_0 = 0x80000000 (DIV 0)
+# for 24 MHz. Faster needs PLL_PHI1 as the source and a faster capture than 5 ns steps.
+name = "s32k358-fast"
+description = "NXP S32K358 on the S32K3X8EVB-Q289, trace on the fast pads PTC2, PTD7, PTD12, PTD11, PTD10"
+core = "cortex-m7"
+
+[coresight]
+etm = 0xE0041000    # Cortex-M7_0 PPB
+dwt = 0xE0001000
+itm = 0xE0000000
+tpiu = 0x4024A000
+tsgen = 0x4024C000
+
+# Programmed in this order, sink side first. Read from the chip: the shared ETF
+# is 4 KB, the cluster ETMI ETF 2 KB.
+[[coresight.path]]
+kind = "etf"        # shared system ETF, in front of the TPIU
+base = 0x40247000
+[[coresight.path]]
+kind = "funnel"     # funnel 2: only port 0, the cluster ETMI ETF
+base = 0x40243000
+ports = 0x1
+itm_priority = false
+[[coresight.path]]
+kind = "etf"        # cluster ETMI ETF
+base = 0x40244000
+[[coresight.path]]
+kind = "funnel"     # funnel 0: port 0 = Cortex-M7_0 ETMI, port 1 = its ITM
+base = 0x40241000
+
+[trace]
+etm_trace_id = 2
+itm_trace_id = 1
+max_width = 4
+
+[clocks]
+# The usual firmware runs the core at 240 MHz (RM Table 154, option A+). A core that
+# has not been set up runs from the 48 MHz FIRC: pass --sysclk-hz 48e6 then.
+tsgen_hz = 240000000
+sysclk_hz = 240000000
+
+# --- trace clock -----------------------------------------------------------
+# MC_CGM mux 11 (base 0x402D8000) feeds TRACE_CLK. It comes out of reset on FIRC
+# (48 MHz), which needs no PLL and no firmware. It is a software-controlled mux
+# (RM Fig. 124): gate, wait until gated, select, ungate, wait until running. The
+# divider (period = (DIV+1) x input; reset value DE = 1, DIV = 0) is written last:
+# it takes a new value only on a running clock, so DIV_STAT stays set while the mux
+# is gated (seen on the chip).
+# The pin clock is half of TRACE_CLK (the /2 of the RM's clock figures), measured on
+# the scope: DIV 3 gives 6 MHz and DIV 0 gives 24 MHz on TRACE_ETM_CLKOUT. The data
+# changes WITH the clock edge on these pads, so the FPGA has to use its oversampling
+# capture (`cortrace fpga ctrl oversample on`), whose resolution is 5 ns:
+#   FIRC, DIV 1 (this file) 12 MHz  window of 25 ns (sample point 1..5), solid
+#   PLL_PHI1 / 4, DIV 3     20 MHz  window of 10 ns (1..2), decodes clean; needs the
+#                                   PLL running with PHI1 = 160 MHz (SELCTL = 1001b
+#                                   instead of 0000b below, DIV = 3)
+#   FIRC, DIV 0             24 MHz  no window: nothing decodes
+# The standard plus pads are rated for 25 MHz (Table 69) and give triangle waves
+# above about 20 MHz on a loaded line.
+[[on_trace_start]]
+comment = "MC_CGM MUX_11_CSC.CG: gate TRACE_CLK"
+op = "rmw32"
+addr = 0x402D85C0
+set = 0x4
+[[on_trace_start]]
+comment = "MUX_11_CSS.CS == 0: gated"
+op = "poll32"
+addr = 0x402D85C4
+mask = 0x20000
+value = 0
+tries = 100
+required = true
+[[on_trace_start]]
+comment = "MUX_11_CSC.SELCTL = FIRC_CLK"
+op = "rmw32"
+addr = 0x402D85C0
+clear = 0x0F000000
+[[on_trace_start]]
+comment = "MUX_11_CSC.CG: ungate TRACE_CLK"
+op = "rmw32"
+addr = 0x402D85C0
+clear = 0x4
+[[on_trace_start]]
+comment = "MUX_11_CSS.CS == 1: TRACE_CLK running"
+op = "poll32"
+addr = 0x402D85C4
+mask = 0x20000
+tries = 100
+required = true
+
+[[on_trace_start]]
+comment = "MUX_11_DC_0: divider on, DIV = 1 (one atomic write)"
+op = "write32"
+addr = 0x402D85C8
+value = 0x80010000
+[[on_trace_start]]
+comment = "MUX_11_DIV_UPD_STAT.DIV_STAT == 0: divider took it"
+op = "poll32"
+addr = 0x402D85FC
+mask = 0x1
+value = 0
+tries = 100
+required = true
+# --- pads ------------------------------------------------------------------
+# SIUL2 base 0x40290000, MSCRn at 0x240 + 4n (RM p.307). SSS = pin function,
+# OBE = bit 21, DSE = bit 8, SRC = bit 14 (0 = fastest; the reset value of these
+# five is 1, slowest). The datasheet measures the trace timing with DSE = 1, SRC = 0.
+[[on_trace_start]]
+comment = "MSCR66  PTC2  = TRACE_ETM_CLKOUT (ALT6, OBE, DSE)"
+op = "write32"
+addr = 0x40290348
+value = 0x00200106
+[[on_trace_start]]
+comment = "MSCR103 PTD7  = TRACE_ETM_D0 (ALT6, OBE, DSE)"
+op = "write32"
+addr = 0x402903DC
+value = 0x00200106
+[[on_trace_start]]
+comment = "MSCR108 PTD12 = TRACE_ETM_D1 (ALT4, OBE, DSE)"
+op = "write32"
+addr = 0x402903F0
+value = 0x00200104
+[[on_trace_start]]
+comment = "MSCR107 PTD11 = TRACE_ETM_D2 (ALT4, OBE, DSE)"
+op = "write32"
+addr = 0x402903EC
+value = 0x00200104
+[[on_trace_start]]
+comment = "MSCR106 PTD10 = TRACE_ETM_D3 (ALT4, OBE, DSE)"
+op = "write32"
+addr = 0x402903E8
+value = 0x00200104
