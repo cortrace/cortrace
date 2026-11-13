@@ -20,11 +20,19 @@
 #     with no idle: dly 1 + tap 31 clean in 3 of 3 one-second captures (3.11 M calls each,
 #     lost-sync 0, addr-nacc 0); dly 1 with the default tap 16 loses sync ~130 times/s,
 #     dly 0, 2, 3 were tried at the default tap only and did not decode. ETM output was 8.5 MB/s of the 30 MB/s the port carries.
+#   60 MHz (PHI1 240 MHz, DIV 1), 1-bit (--width 1, only PTD7 carries data), bitstream
+#     v1.2.0 with `oversample off` (the BUFIO IDDR path): `set-tap` 6 to 31 all decode
+#     (tap 3 and 0 do not), tap 18 chosen. 1 s capture at tap 18: 3.11 M calls balanced,
+#     lost-sync 0, addr-nacc 0. The port carries 15 MB/s then, the coverage profile of
+#     the workload needs 8.5 MB/s. The same wiring at 2-bit (PTD12 added) did not decode
+#     at any tap, and neither did 4-bit; the dual (BUFG) bitstream's IDDR and MMCM paths
+#     found no window at 60 MHz in 1, 2 or 4 bit.
 #   40 MHz (PHI1 240 MHz, DIV 2): dly 0, 1, 2 at tap 31 do not decode; the oversampling
 #     capture needs half a bit period > dly + 2 samples at 200 MHz (33 MHz for dly 1).
 # The 24 MHz timing profile (cycle counts and timestamps, 22 MB/s of ETM data from the
 # same workload) overflowed the 24 MB/s port; that profile needs the faster clock.
-# --blank must stay below half a period (1 at 30 and 40 MHz): the default 2 swallows
+# (The 40 MHz result above is for the oversampling capture; the IDDR path was not
+# scanned at 40 MHz in 1-bit.) --blank must stay below half a period (1 at 30 and 40 MHz): the default 2 swallows
 # edges. 24 MHz: write MUX_11_DC_0 = 0x80000000. 30 MHz needs PLL_PHI1 at 240 MHz
 # (PLLDIG PLLODIV1 = 0x80010000, written while TRACE_CLK sits on FIRC), the mux on
 # PLL_PHI1 (SELCTL 1001b) and MUX_11_DC_0 = 0x80030000.
