@@ -37,6 +37,7 @@ import sys
 import tempfile
 import time
 
+from .. import prbs
 from .._paths import find_binary
 
 PHASE_STEPS_PER_BIT_PER_MULT = 28  # 56 steps per VCO period, 2 bits per TRACECLK
@@ -268,6 +269,9 @@ class Prober:  # pylint: disable=too-many-instance-attributes
 
     def decode(self):
         """Summary of cortrace-decode on the last capture, or None."""
+        width = str(getattr(self.a, "width", 4))
+        if getattr(self.a, "prbs", False):
+            return self.decode_prbs(width)
         cmd = [
             find_binary("CORTRACE_DECODE", "cortrace-decode"),
             self.raw,
@@ -276,7 +280,7 @@ class Prober:  # pylint: disable=too-many-instance-attributes
             self.a.elf,
             "--raw",
             "--trace-width",
-            "4",
+            width,
             "--memory-limit-mb",
             "512",
             "--cycle-time",
@@ -296,6 +300,45 @@ class Prober:  # pylint: disable=too-many-instance-attributes
         except subprocess.TimeoutExpired:
             return None
         return parse_summary(out)
+
+    def decode_prbs(self, width):
+        """Score of the ITM PRBS stream (see prbs.py) in the last capture, in the
+        shape of a decode summary, or None if the decode did not run."""
+        dump = os.path.join(self.tmp, "stream1.bin")
+        cmd = [
+            find_binary("CORTRACE_DECODE", "cortrace-decode"),
+            self.raw,
+            self.syms,
+            "--elf",
+            self.a.elf,
+            "--raw",
+            "--trace-width",
+            width,
+            "--want-stream",
+            "1",
+            "--etm-trace-id",
+            "1",
+            "--dump-etm",
+            dump,
+            "--memory-limit-mb",
+            "512",
+        ]
+        if os.path.isfile(dump):
+            os.remove(dump)
+        try:
+            subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                timeout=300,
+                preexec_fn=_limit_memory,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        if not os.path.isfile(dump):
+            return None
+        with open(dump, "rb") as f:
+            return prbs.summary(f.read())
 
     @property
     def rate_mhz(self):
@@ -433,6 +476,20 @@ def add_arguments(p):
     p.add_argument("--nm", default="arm-none-eabi-nm", help="nm for the ELF symbols")
     p.add_argument("--secs", type=float, default=0.05, help="capture per setting")
     p.add_argument(
+        "--width",
+        type=int,
+        default=4,
+        choices=(1, 2, 4),
+        help="TPIU port width of the stream (default 4)",
+    )
+    p.add_argument(
+        "--prbs",
+        action="store_true",
+        help="judge a setting by the ITM PRBS stream of tools/prbs_itm (start it "
+        "with `cortrace prbs start`; --elf is its prbs_itm.elf) instead of the ETM "
+        "decode: random data finds sampling errors that ETM data hides",
+    )
+    p.add_argument(
         "--mode",
         choices=("auto", "direct", "mmcm", "oversample"),
         default="auto",
@@ -499,10 +556,10 @@ def _make_knob(a, mode, ip, ctrl, health):
                 "the oversampler cannot measure TRACECLK (no clock, or slower than "
                 "0.8 MHz): is the target tracing?"
             )
-        if st["half_cycles"] < OS_SETTLE_CYCLES + 2:
+        if st["half_cycles"] < OS_SETTLE_CYCLES + 1:
             raise CalibrationError(
                 f"TRACECLK is too fast for oversampling ({st['pin_mhz']:.1f} MHz; "
-                "the limit is about 25 MHz)"
+                "the limit is about 33 MHz, where only dly 0..1 is left)"
             )
         return OversampleKnob(ip, ctrl, st["half_cycles"], a.vote)
     return PhaseKnob(ip, ctrl, health, a.mmcm_mult)
@@ -599,8 +656,16 @@ def _calibrate(
     n_ref = reference_events([s["slice_events"] for s in results.values()])
     if n_ref < 100:
         print_flush(
-            "calibrate: the decode finds almost no ETM data at any setting. Is the "
-            "target armed (cortrace arm) and running the firmware of --elf?"
+            "calibrate: the decode finds almost no "
+            + ("PRBS words" if getattr(a, "prbs", False) else "ETM data")
+            + " at any setting. Is the target armed (cortrace arm"
+            + (" --no-etm" if getattr(a, "prbs", False) else "")
+            + ") and running "
+            + (
+                "`cortrace prbs start`?"
+                if getattr(a, "prbs", False)
+                else "the firmware of --elf?"
+            )
         )
         return EXIT_ERROR
 

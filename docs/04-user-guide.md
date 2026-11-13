@@ -330,10 +330,11 @@ features: DDR3 ring, stream self-test, run-time port width
 | 命令 | 作用 |
 |------|------|
 | `cortrace decode …` | 直接调用 `cortrace-decode`，参数原样透传（离线分析已 deframe 的数据、`--edges` 校验等） |
-| `cortrace fpga ctrl set-width 4` | 设置 FPGA 的 TPIU 位宽并重新武装；还有 `rearm`、`set-bitlen`、`stream-selftest`、`iddr-prbs`；`set-tap N` 调数据脚 IDELAY（0 到 31，约 78 ps 一档）；`calibrate --elf fw.elf` 自动扫采样旋钮（直采扫 IDELAY tap，MMCM 扫相位），每个设置抓一小段、解码，把干净窗口的中点写进 FPGA（目标要已经 arm 并在跑一段变化的程序；结果记在 `~/.config/cortrace/calibration/<name>.json`，不会自动应用到以后的会话）；`set-mode direct|mmcm` 选双模比特流的采样时钟；`set-phase N` 和 `relock` 用于带 MMCM 采样时钟的比特流（`health` 的 features 里有 `MMCM sampling clock`），N 是 -255 到 255 步，每步为 VCO 周期的 1/56 |
+| `cortrace fpga ctrl set-width 4` | 设置 FPGA 的 TPIU 位宽并重新武装；还有 `rearm`、`set-bitlen`、`stream-selftest`、`iddr-prbs`；`set-tap N` 调数据脚 IDELAY（0 到 31，约 78 ps 一档）；`calibrate --elf fw.elf` 自动扫采样旋钮（直采扫 IDELAY tap，MMCM 扫相位），每个设置抓一小段、解码，把干净窗口的中点写进 FPGA（目标要已经 arm 并在跑一段变化的程序；加 `--prbs --elf tools/prbs_itm/prbs_itm.elf --width W` 改用 ITM 伪随机数流打分（见 `cortrace prbs`），ETM 数据转换少，会掩盖采样错误；结果记在 `~/.config/cortrace/calibration/<name>.json`，不会自动应用到以后的会话）；`set-mode direct|mmcm` 选双模比特流的采样时钟；`set-phase N` 和 `relock` 用于带 MMCM 采样时钟的比特流（`health` 的 features 里有 `MMCM sampling clock`），N 是 -255 到 255 步，每步为 VCO 周期的 1/56 |
 | `cortrace fpga health [ip] [--check {health,ddr3,blackbox}] [--reset]` | 读 FPGA 的调试寄存器并给出诊断 |
 | `cortrace fpga net` | ARP 探测 FPGA 接在哪个网口（需要 `CAP_NET_RAW`） |
 | `cortrace arm --platform P --elf fw.elf --probe-telnet HOST:PORT` | 通过常驻 OpenOCD 给目标布防 ETM/ITM/DWT；`--list` 列出平台，`--os none` 裸机（不监视变量），`--no-etm` 只布防 ITM/DWT，`--width` 设 TPIU 位宽，`--profile coverage` 只要覆盖率时关掉周期计数和时间戳 |
+| `cortrace prbs start --probe-telnet gdb:HOST:PORT --bin prbs_itm.bin --base 0x20400000` | 把 `tools/prbs_itm`（`make RAM_BASE=...` 编出 `prbs_itm.bin/.elf`）载入目标 RAM 并运行：它往 ITM 刺激口 0 写 xorshift32 序列，经 TPIU 送出一路随机但可复算的数据。先 `cortrace arm --no-etm`（arm 会改写 `ITM_TCR`）再 start；只支持 P&E 的 GDB 服务器。`cortrace prbs check stream1.bin` 给解帧后的 ID 1 流打分（`cortrace-decode --raw --want-stream 1 --dump-etm`）。`calibrate --prbs` 用同样的分数扫采样旋钮 |
 | `cortrace cover run/stream/report/merge/diff` | 不插桩的代码覆盖率，见 4.6、4.7 节 |
 | `cortrace profile run/report/diff` | 周期精确的函数剖析、中断延迟抖动、缓存对照，见 4.8 节 |
 | `cortrace os list` / `os watch --elf fw.elf` / `os resolve …` | 列出 OS 插件 / 打印 DWT 要监视的变量与地址 / 把指针值解析成线程映射 |

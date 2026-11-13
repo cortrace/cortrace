@@ -135,12 +135,13 @@ def test_a_silent_server_times_out():
     server.close()
 
 
-class FakeGdbServer:
+class FakeGdbServer:  # pylint: disable=too-many-instance-attributes
     """The P&E GDB server's manners: memory answers only while halted (zeros
     otherwise), `c` has no reply, Ctrl-C halts and answers T02."""
 
     def __init__(self, memory, packet_size=0x40, ctrl_c_after_c=True):
         self.memory = bytearray(memory)  # the target memory from address 0
+        self.regs = {}  # register number -> value, from `P` packets
         self.halted = False
         self.packet_size = packet_size
         self.log = []
@@ -187,7 +188,7 @@ class FakeGdbServer:
                     break
         conn.close()
 
-    def answer(self, payload):
+    def answer(self, payload):  # pylint: disable=too-many-return-statements
         self.log.append(payload)
         if payload.startswith("qSupported"):
             return f"PacketSize={self.packet_size:x};qXfer:memory-map:read+"
@@ -201,6 +202,10 @@ class FakeGdbServer:
             if not self.halted:
                 return "00" * count
             return bytes(self.memory[addr : addr + count]).hex()
+        if payload[0] == "P":
+            number, value = payload[1:].split("=")
+            self.regs[int(number, 16)] = int.from_bytes(bytes.fromhex(value), "little")
+            return "OK"
         assert payload[0] == "M"
         head, data = payload[1:].split(":")
         addr, count = (int(x, 16) for x in head.split(","))
@@ -288,3 +293,12 @@ def test_gdb_halt_gives_up_when_the_core_never_stops(monkeypatch):
 def test_gdb_unreachable_server_raises():
     with pytest.raises(ProbeError, match="cannot connect"):
         open_probe("gdb:127.0.0.1:1")
+
+
+def test_gdb_write_bytes_and_run_from(gdb_probe):
+    server, probe = gdb_probe
+    probe.write_bytes(0x80, bytes(range(16, 32)))
+    assert probe.read_bytes(0x80, 16) == bytes(range(16, 32))
+    probe.run_from(0x2000_1000, 0x2040_0008)
+    wait_for(lambda: not server.halted)
+    assert server.regs == {13: 0x2000_1000, 15: 0x2040_0008}

@@ -23,6 +23,7 @@ SUMMARIES = {
     "tcbmap": "dump the live pid -> thread-name map through OpenOCD",
     "os": "OS plugins: list, find the variable to watch, resolve thread names",
     "arm": "arm ETM/ITM/DWT trace on the target through a running OpenOCD",
+    "prbs": "random reproducible trace data (ITM) to judge the sampling point: start, check",
     "open": "open a Perfetto trace in ui.perfetto.dev",
     "fpga": "FPGA streamer tools: ctrl (CSR writes), net (find the link), health",
     "version": "print the version",
@@ -73,6 +74,7 @@ COMMANDS = {
     "tcbmap": _lazy("tcbmap"),
     "os": _lazy("osctl"),
     "arm": _lazy("armctl"),
+    "prbs": _lazy("prbs"),
     "open": _lazy("perfetto_open"),
 }
 

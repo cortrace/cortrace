@@ -382,7 +382,7 @@ def test_oversampling_refuses_a_clock_that_is_too_fast(rig, capsys):
     ctrl, tmp_path = rig
     FakeProber.sim["good"] = lambda st: False
     a = cal_args(tmp_path, "--mode", "oversample")
-    code = calibrate.run(a, "ip", "eth0", ctrl, FakeHealth(half=3.0))
+    code = calibrate.run(a, "ip", "eth0", ctrl, FakeHealth(half=2.0))
     assert code == calibrate.EXIT_ERROR
     assert "too fast" in capsys.readouterr().out
 
@@ -404,3 +404,9 @@ def test_decode_args_reach_cortrace_decode(monkeypatch, tmp_path):
     cmd = seen[0]
     assert cmd[-4:] == ["--etm-idr0", "0x08", "--etm-configr", "0x1"]
     assert "--raw" in cmd and "x.elf" in cmd
+
+
+def test_oversampling_accepts_the_fastest_clock_that_leaves_a_sample_point():
+    # 30 MHz is 3 cycles of the 200 MHz clock per half period: dly 0 and 1 remain
+    knob = calibrate.OversampleKnob("ip", None, 3, False)
+    assert (knob.lo, knob.hi, knob.blank) == (0, 1, 1)

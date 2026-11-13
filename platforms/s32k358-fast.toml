@@ -9,33 +9,43 @@
 # differ. The pads sit on VDD_HV_B (jumpers J30, J31 on 1-2 = 3.3 V, the default).
 # The pin functions are those of the S32K344 workbook (CLK and D0 ALT6, D1..D3 ALT4).
 #
-# Measured on the board (test program in SRAM, decoded against its ELF): the fast pads
-# trace, and like the standard plus pads they change the data WITH the clock edge, so
-# `calibrate --mode direct` finds no window on the IDELAY taps and the FPGA has to use
-# its oversampling capture (`cortrace fpga ctrl oversample on --blank 1 --dly N --vote`,
-# 5 ns per step; `set-tap 31` moves the data lanes 2.4 ns later, which helped at 30 MHz):
-#   12 MHz on the pin (this file, FIRC DIV 1)  dly 3: 10,068 calls, balanced, clean
-#   24 MHz on the pin (FIRC DIV 0)             dly 1 and dly 5 clean; 0, 2, 3, 4 not
-#   30 MHz (PLL_PHI1 240 MHz, DIV 3), core at 240 MHz, coverage profile, mixed workload
-#     with no idle: dly 1 + tap 31 clean in 3 of 3 one-second captures (3.11 M calls each,
-#     lost-sync 0, addr-nacc 0); dly 1 with the default tap 16 loses sync ~130 times/s,
-#     dly 0, 2, 3 were tried at the default tap only and did not decode. ETM output was 8.5 MB/s of the 30 MB/s the port carries.
-#   60 MHz (PHI1 240 MHz, DIV 1), 1-bit (--width 1, only PTD7 carries data), bitstream
-#     v1.2.0 with `oversample off` (the BUFIO IDDR path): `set-tap` 6 to 31 all decode
-#     (tap 3 and 0 do not), tap 18 chosen. 1 s capture at tap 18: 3.11 M calls balanced,
-#     lost-sync 0, addr-nacc 0. The port carries 15 MB/s then, the coverage profile of
-#     the workload needs 8.5 MB/s. The same wiring at 2-bit (PTD12 added) did not decode
-#     at any tap, and neither did 4-bit; the dual (BUFG) bitstream's IDDR and MMCM paths
-#     found no window at 60 MHz in 1, 2 or 4 bit.
-#   40 MHz (PHI1 240 MHz, DIV 2): dly 0, 1, 2 at tap 31 do not decode; the oversampling
-#     capture needs half a bit period > dly + 2 samples at 200 MHz (33 MHz for dly 1).
-# The 24 MHz timing profile (cycle counts and timestamps, 22 MB/s of ETM data from the
-# same workload) overflowed the 24 MB/s port; that profile needs the faster clock.
-# (The 40 MHz result above is for the oversampling capture; the IDDR path was not
-# scanned at 40 MHz in 1-bit.) --blank must stay below half a period (1 at 30 and 40 MHz): the default 2 swallows
-# edges. 24 MHz: write MUX_11_DC_0 = 0x80000000. 30 MHz needs PLL_PHI1 at 240 MHz
-# (PLLDIG PLLODIV1 = 0x80010000, written while TRACE_CLK sits on FIRC), the mux on
-# PLL_PHI1 (SELCTL 1001b) and MUX_11_DC_0 = 0x80030000.
+# Measured on the board (core at 240 MHz, fly wires on the flash-side TPADs, the 33 ohm
+# series resistors fitted). The fast pads change the data WITH the clock edge, so the
+# FPGA's IDELAY/IDDR path or its oversampling capture has to place the sample point.
+#
+# Judge a setting by random data, not by an ETM decode. ETM and the TPIU test patterns
+# (CTPMR 0x204: walking 1/0, AA/55, FF/00) hide sampling errors: at 60 MHz a 1-bit
+# ETM trace decoded clean (3.11 M calls, tap 6..31), the test patterns passed on all
+# four lanes, and the same link lost 99% of a random stream at every tap. The
+# random stream is `cortrace prbs` (ITM stimulus port 0, tools/prbs_itm) scored by
+# `cortrace fpga ctrl calibrate --prbs`: a word counts when its successor follows it.
+#
+# Results with the PRBS stream (words intact, 0.1 to 0.3 s captures):
+#   width  pin clock  sampling                          result
+#   1-bit  30 MHz     oversample dly 1, tap 31          100% (40,953 of 40,955)
+#   1-bit  30 MHz     IDDR, tap 24 and 31               100%
+#   1-bit  40 MHz     IDDR, tap 24..31 (window cut off  100%; tap 21 and below fail
+#                     by the end of the range)
+#   1-bit  48 MHz     IDDR, tap 0..31                   below 1% everywhere
+#   1-bit  60 MHz     IDDR, tap 8, 18, 31               below 1%
+#   4-bit  30 MHz     oversample dly 1, tap 31          100% (13,553 of 13,555); dly 0 fails
+#   4-bit  30 MHz     IDDR, tap 11..31                  5% at best
+#   4-bit  40 MHz     IDDR, tap 18..31                  3% at best
+# So random data goes through 4 bits at 30 MHz (30 MB/s of port, enough for one core's
+# 27.6 MB/s worst case, RM Table 835) or through 1 bit at 40 MHz (5 MB/s), and no further
+# with this wiring. The oversampling capture ends at 33 MHz (half a bit period must
+# exceed dly + 2 samples of 200 MHz); IDDR 4-bit failed at 30 MHz where the oversampler
+# works, so the eye of four lanes moving together lies beyond the 2.4 ns of IDELAY.
+# The 24 MHz timing profile (22 MB/s of ETM data from a busy loop) overflowed the
+# 24 MB/s port; the timing profile needs the 30 MHz 4-bit link and has not been run on it.
+# Not tried: shorter wires, the resistors shorted, the dual (BUFG/MMCM) bitstream with
+# random data (with ETM data it found no window at 40 to 60 MHz in 1, 2 and 4 bit).
+#
+# The trace clock stays on FIRC with DIV 1 here (12 MHz on the pin, ETM data decoded
+# clean with oversample dly 3). For 24 MHz write MUX_11_DC_0 = 0x80000000. For 30 MHz
+# PLL_PHI1 must run at 240 MHz (PLLDIG PLLODIV1 = 0x80010000, written while TRACE_CLK
+# sits on FIRC), the mux on PLL_PHI1 (SELCTL 1001b) and MUX_11_DC_0 = 0x80030000.
+# --blank must stay below half a period: 1 at 30 MHz and up; the default 2 swallows edges.
 name = "s32k358-fast"
 description = "NXP S32K358 on the S32K3X8EVB-Q289, trace on the fast pads PTC2, PTD7, PTD12, PTD11, PTD10"
 core = "cortex-m7"

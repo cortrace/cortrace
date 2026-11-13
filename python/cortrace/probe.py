@@ -217,6 +217,20 @@ class PemicroRsp:
         """`size` bytes at `addr`, or None if the target refused the read."""
         return self._while_halted(lambda: self._read(addr, size))
 
+    def write_bytes(self, addr, data):
+        """Write `data` (the length a multiple of 4) at `addr`."""
+        self._while_halted(lambda: self._write(addr, bytes(data)))
+
+    def run_from(self, sp, pc):
+        """Start the core at `pc` (the address of the code; the Thumb bit is
+        the target's business) with the stack pointer `sp`."""
+        self.halt()
+        for reg, value in (("d", sp), ("f", pc)):  # r13, r15
+            out = self._request(f"P{reg}={value.to_bytes(4, 'little').hex()}")
+            if out != "OK":
+                raise ProbeError(f"cannot set register {reg}: {out}")
+        self.resume()
+
 
 def open_probe(spec):
     """The probe a `--probe-telnet` value names: `HOST:PORT` is a running
