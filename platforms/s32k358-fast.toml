@@ -9,18 +9,25 @@
 # differ. The pads sit on VDD_HV_B (jumpers J30, J31 on 1-2 = 3.3 V, the default).
 # The pin functions are those of the S32K344 workbook (CLK and D0 ALT6, D1..D3 ALT4).
 #
-# Measured on the board (test program in SRAM, 1 kHz SysTick work, decoded against
-# its ELF): the fast pads trace, and like the standard plus pads they change the data
-# WITH the clock edge, so `calibrate --mode direct` finds no window on the IDELAY taps and the
-# FPGA has to use its oversampling capture (`cortrace fpga ctrl oversample on --dly N
-# --vote`, 5 ns per step):
+# Measured on the board (test program in SRAM, decoded against its ELF): the fast pads
+# trace, and like the standard plus pads they change the data WITH the clock edge, so
+# `calibrate --mode direct` finds no window on the IDELAY taps and the FPGA has to use
+# its oversampling capture (`cortrace fpga ctrl oversample on --blank 1 --dly N --vote`,
+# 5 ns per step; `set-tap 31` moves the data lanes 2.4 ns later, which helped at 30 MHz):
 #   12 MHz on the pin (this file, FIRC DIV 1)  dly 3: 10,068 calls, balanced, clean
-#                                              (the other dly values were not decoded)
-#   24 MHz on the pin (FIRC DIV 0)             dly 1 and dly 5 decode clean (the two
-#                                              data eyes); 0, 2, 3, 4 do not
-# The standard plus pads of s32k358.toml had no window at 24 MHz.
-# The trace clock stays on FIRC with DIV 1 here; write MUX_11_DC_0 = 0x80000000 (DIV 0)
-# for 24 MHz. Faster needs PLL_PHI1 as the source and a faster capture than 5 ns steps.
+#   24 MHz on the pin (FIRC DIV 0)             dly 1 and dly 5 clean; 0, 2, 3, 4 not
+#   30 MHz (PLL_PHI1 240 MHz, DIV 3), core at 240 MHz, coverage profile, mixed workload
+#     with no idle: dly 1 + tap 31 clean in 3 of 3 one-second captures (3.11 M calls each,
+#     lost-sync 0, addr-nacc 0); dly 1 with the default tap 16 loses sync ~130 times/s,
+#     dly 0, 2, 3 were tried at the default tap only and did not decode. ETM output was 8.5 MB/s of the 30 MB/s the port carries.
+#   40 MHz (PHI1 240 MHz, DIV 2): dly 0, 1, 2 at tap 31 do not decode; the oversampling
+#     capture needs half a bit period > dly + 2 samples at 200 MHz (33 MHz for dly 1).
+# The 24 MHz timing profile (cycle counts and timestamps, 22 MB/s of ETM data from the
+# same workload) overflowed the 24 MB/s port; that profile needs the faster clock.
+# --blank must stay below half a period (1 at 30 and 40 MHz): the default 2 swallows
+# edges. 24 MHz: write MUX_11_DC_0 = 0x80000000. 30 MHz needs PLL_PHI1 at 240 MHz
+# (PLLDIG PLLODIV1 = 0x80010000, written while TRACE_CLK sits on FIRC), the mux on
+# PLL_PHI1 (SELCTL 1001b) and MUX_11_DC_0 = 0x80030000.
 name = "s32k358-fast"
 description = "NXP S32K358 on the S32K3X8EVB-Q289, trace on the fast pads PTC2, PTD7, PTD12, PTD11, PTD10"
 core = "cortex-m7"
